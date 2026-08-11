@@ -1,0 +1,88 @@
+name: Build macOS
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    name: Build macOS DMG
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.22.0'
+          channel: 'stable'
+          cache: true
+
+      - name: Enable macOS desktop target
+        run: flutter config --enable-macos-desktop
+
+      - name: Get Flutter dependencies
+        run: flutter pub get
+
+      - name: Run Flutter analysis
+        run: flutter analyze --no-fatal-infos
+
+      - name: Build macOS release
+        run: flutter build macos --release
+
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Create DMG
+        run: |
+          APP_PATH="build/macos/Build/Products/Release/deepThink.app"
+          DMG_NAME="deepThink-${{ github.ref_name }}.dmg"
+          create-dmg \
+            --volname "deepThink" \
+            --volicon "$APP_PATH/Contents/Resources/AppIcon.icns" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "deepThink.app" 175 190 \
+            --hide-extension "deepThink.app" \
+            --app-drop-link 425 190 \
+            "build/$DMG_NAME" \
+            "$APP_PATH" || \
+          cp -r "$APP_PATH" "build/deepThink.app" && \
+          hdiutil create -volname "deepThink" -srcfolder "build/deepThink.app" -ov -format UDZO "build/$DMG_NAME"
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deepThink-macos-dmg
+          path: build/deepThink-*.dmg
+          retention-days: 30
+
+      - name: Create GitHub Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/deepThink-*.dmg
+          body: |
+            ## deepThink ${{ github.ref_name }}
+
+            ### macOS
+            Download `deepThink-${{ github.ref_name }}.dmg`, open it, and drag `deepThink.app` to your Applications folder.
+
+            **Requirements:** macOS 13 Ventura or later, Apple Silicon recommended (32 GB RAM minimum for full model stack).
+
+            ### Windows
+            A pre-compiled Windows installer is not yet available.  
+            Windows users can compile from source — see [windows/BUILD.md](https://github.com/007Style/deepThink/blob/main/windows/BUILD.md) for full instructions.
+
+            ### Models
+            All four AI models (~22 GB total) are downloaded on first launch. The app runs fully offline after that.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
