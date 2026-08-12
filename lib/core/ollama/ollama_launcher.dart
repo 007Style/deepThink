@@ -1,13 +1,16 @@
 /// Ollama process launcher for deepThink.
 ///
-/// Manages the bundled Ollama binary lifecycle: extraction from Flutter assets
-/// (performed at first run since the assets bundle is read-only), starting the
-/// background process, and stopping it cleanly on app exit.
+/// Manages the bundled Ollama binary lifecycle. On macOS the full Ollama
+/// runtime is copied into the .app bundle at build time by the Xcode
+/// "Copy Ollama Runtime" shell-script build phase and lives at:
+///
+///   `<app>.app/Contents/Resources/ollama/ollama`
+///
+/// On Windows the runtime is placed next to the executable under:
+///
+///   `<install dir>\ollama\ollama.exe`
 ///
 /// This file has zero Flutter imports — pure Dart only.
-/// Path resolution uses [dart:io] and the [path_provider] package is consumed
-/// at a higher layer; this class accepts the support directory as a parameter
-/// so it remains framework-agnostic.
 library ollama_launcher;
 
 import 'dart:io';
@@ -21,28 +24,21 @@ import 'dart:async';
 ///
 /// ### Typical usage
 /// ```dart
-/// final launcher = OllamaLauncher(appSupportDir: '/path/to/app-support');
+/// final launcher = OllamaLauncher();
 /// await launcher.start();
 /// // ... app runs ...
 /// await launcher.stop();
 /// ```
 ///
-/// ### Binary extraction
-/// Flutter asset bundles are read-only, so the Ollama binary is copied to
-/// [appSupportDir] on first run and executed from there.
+/// ### Binary location
+/// The binary is **not** extracted from Flutter assets — it is bundled
+/// directly into the native app package at build time:
 ///
-/// **macOS path after extraction:**
-/// `~/Library/Application Support/deepThink/ollama`
-///
-/// **Windows path after extraction:**
-/// `%APPDATA%\deepThink\ollama.exe`
+/// - **macOS:** `<app>.app/Contents/Resources/ollama/ollama`
+///   (copied by the Xcode "Copy Ollama Runtime" build phase)
+/// - **Windows:** `<exe dir>\ollama\ollama.exe`
+///   (placed there by the NSIS/Inno Setup installer)
 class OllamaLauncher {
-  /// The app-support directory where the Ollama binary will be extracted.
-  ///
-  /// Supply the value returned by `getApplicationSupportDirectory()` from
-  /// the `path_provider` package (called from the Flutter layer).
-  final String appSupportDir;
-
   /// Base URL for the Ollama REST API.
   final String baseUrl;
 
@@ -50,12 +46,8 @@ class OllamaLauncher {
 
   /// Creates an [OllamaLauncher].
   ///
-  /// [appSupportDir] must be a writable directory on the host OS.
   /// [baseUrl] defaults to `http://localhost:11434`.
-  OllamaLauncher({
-    required this.appSupportDir,
-    this.baseUrl = 'http://localhost:11434',
-  });
+  OllamaLauncher({this.baseUrl = 'http://localhost:11434'});
 
   // -------------------------------------------------------------------------
   // Public API
@@ -82,18 +74,33 @@ class OllamaLauncher {
   /// If Ollama is already running (detected via [isRunning]) this method
   /// returns immediately without spawning a second process.
   ///
-  /// The binary is extracted from the Flutter assets bundle to [appSupportDir]
-  /// on first run using [extractBinary].
-  ///
   /// Throws a [StateError] if the binary cannot be found or executed.
   Future<void> start() async {
     if (await isRunning()) return;
 
-    final binaryPath = await extractBinary();
+    final binaryPath = _binaryPath();
+    final file = File(binaryPath);
+    if (!await file.exists()) {
+      throw StateError(
+        'Bundled Ollama binary not found at "$binaryPath".\n'
+        'Ensure the "Copy Ollama Runtime" Xcode build phase ran successfully.',
+      );
+    }
 
-    // Ensure the binary is executable on POSIX platforms.
+    // Ensure executable bit is set (may be lost during packaging on some systems).
     if (!Platform.isWindows) {
       await Process.run('chmod', ['+x', binaryPath]);
+    }
+
+    // Also chmod the helper binaries in the same directory.
+    if (Platform.isMacOS) {
+      final dir = file.parent;
+      for (final name in ['llama-server', 'llama-quantize']) {
+        final helper = File('${dir.path}/$name');
+        if (await helper.exists()) {
+          await Process.run('chmod', ['+x', helper.path]);
+        }
+      }
     }
 
     _process = await Process.start(
@@ -102,12 +109,14 @@ class OllamaLauncher {
       environment: {
         ...Platform.environment,
         'OLLAMA_KEEP_ALIVE': '-1',
+        // Tell Ollama where its own binaries live (same directory).
+        'OLLAMA_RUNNERS_DIR': file.parent.path,
       },
       mode: ProcessStartMode.detachedWithStdio,
     );
 
-    // Wait up to 10 seconds for the server to become responsive.
-    const maxWait = Duration(seconds: 10);
+    // Wait up to 15 seconds for the server to become responsive.
+    const maxWait = Duration(seconds: 15);
     const pollInterval = Duration(milliseconds: 300);
     final deadline = DateTime.now().add(maxWait);
 
@@ -131,59 +140,29 @@ class OllamaLauncher {
     _process = null;
   }
 
-  /// Returns the filesystem path to the extracted Ollama binary.
-  ///
-  /// If the binary is already present in [appSupportDir] this method returns
-  /// immediately. Otherwise it reads the raw bytes from the Flutter asset
-  /// bundle path (provided via [assetBytesLoader]) and writes them to disk.
-  ///
-  /// **Note:** Binary extraction from the asset bundle must be triggered from
-  /// the Flutter layer because `rootBundle` is a Flutter concept. Pass the
-  /// loader via [assetBytesLoader] when calling from Flutter code, or supply
-  /// `null` to skip asset extraction (useful when the binary is already present
-  /// from a previous run).
-  Future<String> extractBinary({
-    Future<List<int>> Function(String assetPath)? assetBytesLoader,
-  }) async {
-    final binaryPath = _binaryPath();
-    final file = File(binaryPath);
-
-    if (await file.exists()) return binaryPath;
-
-    // Create the parent directory if needed.
-    await file.parent.create(recursive: true);
-
-    if (assetBytesLoader == null) {
-      throw StateError(
-        'Ollama binary not found at $binaryPath and no assetBytesLoader '
-        'was provided for extraction.',
-      );
-    }
-
-    final assetPath = _assetPath();
-    final bytes = await assetBytesLoader(assetPath);
-    await file.writeAsBytes(bytes, flush: true);
-
-    return binaryPath;
-  }
-
   // -------------------------------------------------------------------------
   // Path helpers
   // -------------------------------------------------------------------------
 
-  /// The asset-bundle path for the current platform.
-  String _assetPath() {
-    if (Platform.isWindows) {
-      return 'assets/ollama/windows/ollama.exe';
-    }
-    return 'assets/ollama/macos/ollama';
-  }
-
-  /// The filesystem path where the binary is extracted for the current platform.
+  /// Returns the filesystem path to the bundled Ollama binary.
+  ///
+  /// - macOS: resolved relative to the running executable inside the .app bundle.
+  /// - Windows: resolved relative to the running executable.
   String _binaryPath() {
-    if (Platform.isWindows) {
-      return '$appSupportDir\\deepThink\\ollama.exe';
+    if (Platform.isMacOS) {
+      // Executable path: <app>.app/Contents/MacOS/deep_think
+      // Binary path:     <app>.app/Contents/Resources/ollama/ollama
+      final exeDir = File(Platform.resolvedExecutable).parent;
+      // Go up from MacOS/ to Contents/, then into Resources/ollama/
+      final contentsDir = exeDir.parent;
+      return '${contentsDir.path}/Resources/ollama/ollama';
+    } else if (Platform.isWindows) {
+      // Executable path: <install dir>\deep_think.exe
+      // Binary path:     <install dir>\ollama\ollama.exe
+      final exeDir = File(Platform.resolvedExecutable).parent;
+      return '${exeDir.path}\\ollama\\ollama.exe';
+    } else {
+      throw UnsupportedError('Unsupported platform: ${Platform.operatingSystem}');
     }
-    return '$appSupportDir/deepThink/ollama';
   }
 }

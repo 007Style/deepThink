@@ -66,10 +66,10 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
-  # Bundled Ollama binaries for macOS and Windows.
-  assets:
-    - assets/ollama/macos/
-    - assets/ollama/windows/
+  # No Flutter assets needed for Ollama — the runtime is bundled directly
+  # into the native .app/.exe package by the platform build systems.
+  # (macOS: Xcode "Copy Ollama Runtime" build phase)
+  # (Windows: NSIS/Inno Setup installer)
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images
