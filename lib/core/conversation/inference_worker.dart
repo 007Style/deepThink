@@ -114,6 +114,10 @@ class InferenceWorker {
   // rather than nesting calls.
   bool _pendingResponse = false;
 
+  // True when the pending response is specifically triggered by a user message.
+  // Passed through to _runInference so the model cannot pass on user input.
+  bool _pendingIsUserMessage = false;
+
   /// Creates an [InferenceWorker].
   InferenceWorker({
     required this.participant,
@@ -146,8 +150,10 @@ class InferenceWorker {
       if (_inferencing) {
         // Another inference is already in flight — flag for a follow-up.
         _pendingResponse = true;
+        // If this is a user message, mark it so we don't pass on it.
+        if (message.isUser) _pendingIsUserMessage = true;
       } else {
-        _scheduleResponse(allParticipants);
+        _scheduleResponse(allParticipants, forceRespond: message.isUser);
       }
     });
   }
@@ -168,18 +174,19 @@ class InferenceWorker {
   // Core inference loop
   // -------------------------------------------------------------------------
 
-  void _scheduleResponse(List<Participant> allParticipants) {
+  void _scheduleResponse(List<Participant> allParticipants,
+      {bool forceRespond = false}) {
     // Random jitter: 200–800 ms to stagger AI responses naturally.
-    final jitter =
-        Duration(milliseconds: 200 + _rng.nextInt(601));
+    final jitter = Duration(milliseconds: 200 + _rng.nextInt(601));
 
     Timer(jitter, () {
       if (!_running) return;
-      _runInference(allParticipants);
+      _runInference(allParticipants, forceRespond: forceRespond);
     });
   }
 
-  Future<void> _runInference(List<Participant> allParticipants) async {
+  Future<void> _runInference(List<Participant> allParticipants,
+      {bool forceRespond = false}) async {
     if (_inferencing || !_running) return;
     _inferencing = true;
 
@@ -190,7 +197,7 @@ class InferenceWorker {
     ));
 
     try {
-      final messages = _buildMessages(allParticipants);
+      final messages = _buildMessages(allParticipants, forceRespond: forceRespond);
       final numCtx = _contextWindow();
 
       final responseBuffer = StringBuffer();
@@ -244,8 +251,10 @@ class InferenceWorker {
       _inferencing = false;
 
       if (_pendingResponse && _running) {
+        final wasUser = _pendingIsUserMessage;
         _pendingResponse = false;
-        _scheduleResponse(allParticipants);
+        _pendingIsUserMessage = false;
+        _scheduleResponse(allParticipants, forceRespond: wasUser);
       }
     }
   }
@@ -257,8 +266,10 @@ class InferenceWorker {
   /// Builds the Ollama `messages` payload for the current conversation state.
   ///
   /// If a context reset is needed, only the reset seed is included as history.
-  List<Map<String, String>> _buildMessages(
-      List<Participant> allParticipants) {
+  /// [forceRespond] adds an instruction reminding the model to respond directly
+  /// to the user rather than passing.
+  List<Map<String, String>> _buildMessages(List<Participant> allParticipants,
+      {bool forceRespond = false}) {
     final systemPrompt = SystemPromptBuilder.build(
       participant,
       allParticipants,
@@ -293,9 +304,20 @@ class InferenceWorker {
           m.participantName == participant.name ? 'assistant' : 'user';
       // Prefix non-user messages with the speaker's name so the model can
       // attribute them in context.
-      final prefix =
-          m.isUser ? '' : '${m.participantName}: ';
+      final prefix = m.isUser ? '' : '${m.participantName}: ';
       chatMessages.add({'role': role, 'content': '$prefix${m.content}'});
+    }
+
+    // When triggered by a user message, add a reminder that passing is not
+    // allowed — the human is waiting for a direct response.
+    if (forceRespond) {
+      chatMessages.add({
+        'role': 'user',
+        'content':
+            '[System: The human user just sent a message above. '
+            'You MUST respond directly to them. '
+            'Do NOT return an empty string. Do NOT pass.]',
+      });
     }
 
     return chatMessages;

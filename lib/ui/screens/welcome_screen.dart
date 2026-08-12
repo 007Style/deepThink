@@ -27,7 +27,10 @@ import 'startup_config_screen.dart';
 // ---------------------------------------------------------------------------
 
 /// Greets the user, explains the model situation, and asks before downloading.
-class WelcomeScreen extends StatelessWidget {
+///
+/// If [hardware.totalRamGb] is 0 (placeholder from cancel path) the screen
+/// re-detects hardware itself on first build.
+class WelcomeScreen extends StatefulWidget {
   final HardwareInfo hardware;
   final List<ModelStatus> modelStatuses;
 
@@ -37,7 +40,31 @@ class WelcomeScreen extends StatelessWidget {
     super.key,
   });
 
-  bool get _anyMissing => modelStatuses.any((s) => !s.isInstalled);
+  @override
+  State<WelcomeScreen> createState() => _WelcomeScreenState();
+}
+
+class _WelcomeScreenState extends State<WelcomeScreen> {
+  late HardwareInfo _hardware;
+  late List<ModelStatus> _modelStatuses;
+
+  @override
+  void initState() {
+    super.initState();
+    _hardware = widget.hardware;
+    _modelStatuses = widget.modelStatuses;
+    // If we came back from FirstLaunchScreen with a placeholder, re-detect.
+    if (_hardware.totalRamGb == 0) {
+      _redetect();
+    }
+  }
+
+  Future<void> _redetect() async {
+    final hw = await HardwareDetector.detect();
+    if (mounted) setState(() => _hardware = hw);
+  }
+
+  bool get _anyMissing => _modelStatuses.any((s) => !s.isInstalled);
 
   @override
   Widget build(BuildContext context) {
@@ -57,8 +84,13 @@ class WelcomeScreen extends StatelessWidget {
                 const SizedBox(height: 32),
 
                 // ── Hardware summary ───────────────────────────────────────
-                _HardwareBar(hardware: hardware),
-                const SizedBox(height: 28),
+                _HardwareBar(hardware: _hardware),
+                const SizedBox(height: 12),
+
+                // ── Low-RAM warning (shown only when needed) ───────────────
+                _RamWarningBanner(hardware: _hardware),
+                const SizedBox(height: 16),
+
 
                 // ── Model status cards ─────────────────────────────────────
                 _buildModelsSection(context),
@@ -170,10 +202,10 @@ class WelcomeScreen extends StatelessWidget {
         ),
         const SizedBox(height: 10),
         // One card per model
-        ...modelStatuses.map((s) => _ModelStatusCard(status: s)),
+        ..._modelStatuses.map((s) => _ModelStatusCard(status: s)),
         // Total row
         const SizedBox(height: 8),
-        _TotalRamRow(statuses: modelStatuses),
+        _TotalRamRow(statuses: _modelStatuses),
       ],
     );
   }
@@ -182,8 +214,8 @@ class WelcomeScreen extends StatelessWidget {
 
   Widget _buildCta(BuildContext context) {
     if (_anyMissing) {
-      final missing = modelStatuses.where((s) => !s.isInstalled).length;
-      final totalGb = modelStatuses
+      final missing = _modelStatuses.where((s) => !s.isInstalled).length;
+      final totalGb = _modelStatuses
           .where((s) => !s.isInstalled)
           .fold(0.0, (sum, s) => sum + s.model.ramGb);
 
@@ -265,7 +297,10 @@ class WelcomeScreen extends StatelessWidget {
   void _goToDownload(BuildContext context) {
     Navigator.of(context).pushReplacement(
       MaterialPageRoute<void>(
-        builder: (_) => FirstLaunchScreen(initialStatuses: modelStatuses),
+        builder: (_) => FirstLaunchScreen(
+          initialStatuses: _modelStatuses,
+          hardware: _hardware,
+        ),
       ),
     );
   }
@@ -273,7 +308,7 @@ class WelcomeScreen extends StatelessWidget {
   void _goToConfig(BuildContext context) {
     Navigator.of(context).pushReplacement(
       MaterialPageRoute<void>(
-        builder: (_) => StartupConfigScreen(hardware: hardware),
+        builder: (_) => StartupConfigScreen(hardware: _hardware),
       ),
     );
   }
@@ -281,7 +316,10 @@ class WelcomeScreen extends StatelessWidget {
   void _showManualHelp(BuildContext context) {
     showDialog<void>(
       context: context,
-      builder: (_) => _ManualInstallDialog(modelsDir: _modelsDir()),
+      builder: (_) => _ManualInstallDialog(
+        modelsDir: _modelsDir(),
+        modelStatuses: _modelStatuses,
+      ),
     );
   }
 
@@ -321,8 +359,15 @@ class _HardwareBar extends StatelessWidget {
         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
         children: [
           _HardwarePill(
-            label: 'RAM',
+            label: 'Total RAM',
             value: '${hardware.totalRamGb.toStringAsFixed(0)} GB',
+          ),
+          _HardwarePill(
+            label: 'Free RAM',
+            value: '${hardware.freeRamGb.toStringAsFixed(1)} GB',
+            valueColor: hardware.freeRamGb < 24
+                ? const Color(0xFFFF9800)
+                : null,
           ),
           _HardwarePill(
             label: 'Inference',
@@ -346,7 +391,12 @@ class _HardwareBar extends StatelessWidget {
 class _HardwarePill extends StatelessWidget {
   final String label;
   final String value;
-  const _HardwarePill({required this.label, required this.value});
+  final Color? valueColor;
+  const _HardwarePill({
+    required this.label,
+    required this.value,
+    this.valueColor,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -359,11 +409,87 @@ class _HardwarePill extends StatelessWidget {
                 letterSpacing: 0.5)),
         const SizedBox(height: 2),
         Text(value,
-            style: const TextStyle(
+            style: TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
-                color: AppColors.textPrimary)),
+                color: valueColor ?? AppColors.textPrimary)),
       ],
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// _RamWarningBanner
+// ---------------------------------------------------------------------------
+
+/// Shown when available RAM is too low to comfortably run the full model stack.
+///
+/// The full stack needs ~22.5 GB. We warn at <24 GB free (leaves ~1.5 GB
+/// headroom) and show a critical alert at <16 GB free (models will likely
+/// be swapped to disk, causing severe slowdowns or OOM crashes).
+class _RamWarningBanner extends StatelessWidget {
+  final HardwareInfo hardware;
+  /// Total RAM required to run all four models simultaneously.
+  static const double _stackGb = 22.5;
+  /// Warn threshold — below this things will be tight.
+  static const double _warnGb = 24.0;
+  /// Critical threshold — below this Ollama will almost certainly swap or OOM.
+  static const double _criticalGb = 16.0;
+
+  const _RamWarningBanner({required this.hardware});
+
+  @override
+  Widget build(BuildContext context) {
+    final free = hardware.freeRamGb;
+    if (free >= _warnGb) return const SizedBox.shrink();
+
+    final isCritical = free < _criticalGb;
+    final borderColor =
+        isCritical ? const Color(0xFFF44336) : const Color(0xFFFF9800);
+    final bgColor =
+        isCritical ? const Color(0xFF1a0505) : const Color(0xFF1a1200);
+    final iconColor =
+        isCritical ? const Color(0xFFF44336) : const Color(0xFFFF9800);
+    final icon =
+        isCritical ? Icons.error_outline_rounded : Icons.warning_amber_rounded;
+
+    final needed = _stackGb - free;
+    final message = isCritical
+        ? 'Only ${free.toStringAsFixed(1)} GB of RAM is free right now. '
+          'deepThink needs ~${_stackGb.toStringAsFixed(0)} GB to run all four models — '
+          'you\'re ${needed.toStringAsFixed(1)} GB short. '
+          'Close other apps (especially any other AI tools) before continuing, '
+          'or the app will swap heavily and likely crash.'
+        : 'Only ${free.toStringAsFixed(1)} GB of RAM is free right now. '
+          'deepThink performs best with ~${_stackGb.toStringAsFixed(0)} GB available. '
+          'Consider closing other apps — especially any other AI or browser processes — '
+          'before starting a session.';
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: borderColor),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: iconColor, size: 18),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              message,
+              style: TextStyle(
+                fontSize: 12,
+                color: iconColor,
+                height: 1.5,
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -496,7 +622,11 @@ class _TotalRamRow extends StatelessWidget {
 
 class _ManualInstallDialog extends StatelessWidget {
   final String modelsDir;
-  const _ManualInstallDialog({required this.modelsDir});
+  final List<ModelStatus> modelStatuses;
+  const _ManualInstallDialog({
+    required this.modelsDir,
+    required this.modelStatuses,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -563,11 +693,40 @@ class _ManualInstallDialog extends StatelessWidget {
         ),
       ),
       actions: [
+        // ← Back: dismiss dialog, return to WelcomeScreen
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
           child: const Text(
-            'Got it',
-            style: TextStyle(color: AppColors.accent, fontWeight: FontWeight.w700),
+            '← Back',
+            style: TextStyle(
+                color: AppColors.textSecondary, fontWeight: FontWeight.w600),
+          ),
+        ),
+        // Download instead: dismiss dialog then navigate to download screen
+        ElevatedButton(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: AppColors.accent,
+            foregroundColor: Colors.white,
+            padding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8)),
+          ),
+          onPressed: () {
+            Navigator.of(context).pop(); // close dialog
+            Navigator.of(context).pushReplacement(
+              MaterialPageRoute<void>(
+                builder: (_) => FirstLaunchScreen(
+                  initialStatuses: modelStatuses,
+                  // hardware not available here — FirstLaunchScreen will
+                  // use a placeholder and WelcomeScreen will re-detect on cancel
+                ),
+              ),
+            );
+          },
+          child: const Text(
+            'Download models instead',
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
           ),
         ),
       ],

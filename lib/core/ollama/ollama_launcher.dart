@@ -112,8 +112,19 @@ class OllamaLauncher {
         // Tell Ollama where its own binaries live (same directory).
         'OLLAMA_RUNNERS_DIR': file.parent.path,
       },
-      mode: ProcessStartMode.detachedWithStdio,
+      // Use normal mode so stdout/stderr are readable for diagnostics.
+      mode: ProcessStartMode.normal,
     );
+
+    // Forward Ollama's output to the Dart console so errors are visible.
+    _process!.stdout.listen((data) {
+      // ignore: avoid_print
+      print('[ollama] ${String.fromCharCodes(data).trimRight()}');
+    });
+    _process!.stderr.listen((data) {
+      // ignore: avoid_print
+      print('[ollama:err] ${String.fromCharCodes(data).trimRight()}');
+    });
 
     // Wait up to 15 seconds for the server to become responsive.
     const maxWait = Duration(seconds: 15);

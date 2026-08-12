@@ -8,6 +8,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
+import '../../core/ollama/hardware_detector.dart';
 import '../../core/ollama/model_manager.dart';
 import '../../core/ollama/model_registry.dart';
 import '../../core/ollama/ollama_client.dart';
@@ -15,6 +16,7 @@ import '../avatars/avatar_registry.dart';
 import '../avatars/avatar_widget.dart';
 import '../widgets/app_theme.dart';
 import 'startup_config_screen.dart';
+import 'welcome_screen.dart';
 
 // ---------------------------------------------------------------------------
 // FirstLaunchScreen
@@ -30,8 +32,13 @@ class FirstLaunchScreen extends StatefulWidget {
   /// Pre-computed initial statuses (so we don't re-check on mount).
   final List<ModelStatus> initialStatuses;
 
+  /// Hardware info passed back to WelcomeScreen if the user cancels.
+  /// Optional — WelcomeScreen can re-detect if not provided.
+  final HardwareInfo? hardware;
+
   const FirstLaunchScreen({
     required this.initialStatuses,
+    this.hardware,
     super.key,
   });
 
@@ -154,8 +161,15 @@ class _FirstLaunchScreenState extends State<FirstLaunchScreen>
           });
           if (p.isDone) break;
         }
-      } catch (_) {
+      } catch (e) {
         failed = true;
+        if (mounted) {
+          setState(() {
+            dlState.statusText = e.toString()
+                .replaceFirst('HttpException: ', '')
+                .replaceFirst('Exception: ', '');
+          });
+        }
       }
 
       if (!mounted) return;
@@ -163,7 +177,13 @@ class _FirstLaunchScreenState extends State<FirstLaunchScreen>
       if (failed || dlState.state != _DlState.done) {
         setState(() {
           dlState.state = _DlState.failed;
-          dlState.statusText = 'Download failed';
+          if (dlState.statusText.isEmpty ||
+              dlState.statusText.startsWith('Downloading') ||
+              dlState.statusText.startsWith('Connecting') ||
+              dlState.statusText.startsWith('Waiting')) {
+            dlState.statusText = 'Download failed';
+          }
+          // statusText already set to the actual error in the catch block above
           _hasFailed = true;
         });
         // Stop sequential downloads on first failure; user must retry.
@@ -231,10 +251,9 @@ class _FirstLaunchScreenState extends State<FirstLaunchScreen>
       body: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 560),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 48),
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 40),
             child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 // ── Animated orb ─────────────────────────────────────────
@@ -244,7 +263,7 @@ class _FirstLaunchScreenState extends State<FirstLaunchScreen>
                   allDone: _allDone,
                 ),
 
-                const SizedBox(height: 32),
+                const SizedBox(height: 28),
 
                 // ── Title ─────────────────────────────────────────────────
                 const Text(
@@ -267,17 +286,17 @@ class _FirstLaunchScreenState extends State<FirstLaunchScreen>
                   ),
                 ),
 
-                const SizedBox(height: 36),
+                const SizedBox(height: 32),
 
                 // ── Per-model rows ────────────────────────────────────────
                 ...(_states.map(_buildModelRow)),
 
-                const SizedBox(height: 28),
+                const SizedBox(height: 24),
 
                 // ── Overall progress ──────────────────────────────────────
                 _OverallProgressBar(progress: _overallProgress),
 
-                const SizedBox(height: 28),
+                const SizedBox(height: 24),
 
                 // ── Retry / status ────────────────────────────────────────
                 if (_hasFailed)
@@ -299,9 +318,47 @@ class _FirstLaunchScreenState extends State<FirstLaunchScreen>
                       color: AppColors.textSecondary,
                     ),
                   ),
+
+                const SizedBox(height: 32),
+
+                // ── Cancel ────────────────────────────────────────────────
+                if (!_allDone) _CancelButton(onPressed: _cancel),
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Cancel — stop downloads and go back to WelcomeScreen.
+  // Any model already in _DlState.done is preserved: the download loop
+  // checks state == done and skips it, so nothing is re-downloaded.
+  // -------------------------------------------------------------------------
+
+  void _cancel() {
+    // Build current statuses: done models are marked installed, others not.
+    final currentStatuses = _states
+        .map((s) => ModelStatus(
+              model: s.model,
+              isInstalled: s.state == _DlState.done,
+            ))
+        .toList();
+
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute<void>(
+        builder: (_) => WelcomeScreen(
+          // Re-use passed hardware or let WelcomeScreen rebuild with defaults.
+          hardware: widget.hardware ??
+              HardwareInfo(
+                totalRamGb: 0,
+                freeRamGb: 0,
+                ramTier: RamTier.tier32,
+                inferenceBackend: InferenceBackend.cpu,
+                backendDisplayName: 'Unknown',
+              ),
+          modelStatuses: currentStatuses,
         ),
       ),
     );
@@ -487,6 +544,50 @@ class _RetryButton extends StatelessWidget {
           ),
           onPressed: onPressed,
         ),
+      ],
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// _CancelButton
+// ---------------------------------------------------------------------------
+
+class _CancelButton extends StatelessWidget {
+  final VoidCallback onPressed;
+  const _CancelButton({required this.onPressed});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        const Divider(color: AppColors.border),
+        const SizedBox(height: 12),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            style: OutlinedButton.styleFrom(
+              foregroundColor: AppColors.textSecondary,
+              side: const BorderSide(color: AppColors.border),
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+            ),
+            icon: const Icon(Icons.arrow_back_rounded, size: 16),
+            label: const Text(
+              'Cancel and go back',
+              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+            ),
+            onPressed: onPressed,
+          ),
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'Any completed downloads will not be lost.',
+          style: TextStyle(fontSize: 11, color: AppColors.textSecondary),
+        ),
+        const SizedBox(height: 8),
       ],
     );
   }

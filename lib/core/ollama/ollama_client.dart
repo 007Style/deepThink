@@ -236,8 +236,20 @@ class OllamaClient {
       );
     }
 
+    // Buffer partial lines across chunks — Ollama streams newline-delimited JSON
+    // but a single chunk may arrive mid-line.
+    final lineBuffer = StringBuffer();
+
     await for (final chunk in response.transform(utf8.decoder)) {
-      for (final line in chunk.split('\n')) {
+      lineBuffer.write(chunk);
+      final raw = lineBuffer.toString();
+      final lines = raw.split('\n');
+
+      // Keep the last element in the buffer — it may be an incomplete line.
+      lineBuffer.clear();
+      lineBuffer.write(lines.last);
+
+      for (final line in lines.sublist(0, lines.length - 1)) {
         final trimmed = line.trim();
         if (trimmed.isEmpty) continue;
 
@@ -248,9 +260,21 @@ class OllamaClient {
           continue;
         }
 
+        // Ollama sends {"error":"..."} for failures (e.g. network loss,
+        // partial download state mismatch). Surface it as an exception.
+        final error = json['error'] as String?;
+        if (error != null && error.isNotEmpty) {
+          throw HttpException('Ollama pull error for $modelTag: $error');
+        }
+
         final status = json['status'] as String? ?? '';
         final completed = (json['completed'] as num?)?.toInt() ?? 0;
         final total = (json['total'] as num?)?.toInt() ?? 0;
+
+        // Ollama signals completion with status == 'success'.
+        // It also sends a series of intermediate statuses:
+        //   "pulling manifest" → "pulling layer" → "verifying sha256 digest"
+        //   → "writing manifest" → "removing any unused layers" → "success"
         final isDone = status == 'success';
 
         yield ModelPullProgress(
@@ -262,6 +286,31 @@ class OllamaClient {
         );
 
         if (isDone) return;
+      }
+    }
+
+    // Flush any remaining buffered line (stream closed mid-line is unusual
+    // but handle it gracefully — if it parses as success, we're done).
+    final remaining = lineBuffer.toString().trim();
+    if (remaining.isNotEmpty) {
+      try {
+        final json = jsonDecode(remaining) as Map<String, dynamic>;
+        final error = json['error'] as String?;
+        if (error != null && error.isNotEmpty) {
+          throw HttpException('Ollama pull error for $modelTag: $error');
+        }
+        final status = json['status'] as String? ?? '';
+        if (status == 'success') {
+          yield ModelPullProgress(
+            modelTag: modelTag,
+            completed: 0,
+            total: 0,
+            status: status,
+            isDone: true,
+          );
+        }
+      } catch (_) {
+        // Malformed trailing data — ignore.
       }
     }
   }

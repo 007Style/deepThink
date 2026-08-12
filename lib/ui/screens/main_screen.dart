@@ -125,25 +125,24 @@ class _MainScreenState extends State<MainScreen> {
   Future<void> _start() async {
     if (_isRunning) return;
 
-    // Create and start the session.
+    // Create session.
     final session = await _sessionManager.createSession(
       participants: widget.participants,
     );
     _session = session;
 
-    // Start the engine and begin logging.
+    // Wire up event and log subscriptions BEFORE starting the engine so we
+    // never miss the kickoff message or the first round of tokens.
+    _engineSub = _engine.eventStream.listen(_handleEvent);
+    _engine.log.messageStream.listen(_handleLogMessage);
+
+    // Start the engine (appends kickoff message — workers see it immediately).
     await _engine.start(widget.participants, widget.hardware);
 
     _logSub = await _sessionManager.startLogging(
       session,
       _engine.log.messageStream,
     );
-
-    // Subscribe to inference events and route them to quadrants.
-    _engineSub = _engine.eventStream.listen(_handleEvent);
-
-    // Also listen to the log for completed messages (for all quadrants).
-    _engine.log.messageStream.listen(_handleLogMessage);
 
     setState(() {
       _isRunning = true;

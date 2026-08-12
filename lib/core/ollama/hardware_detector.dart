@@ -52,6 +52,13 @@ class HardwareInfo {
   /// Detected total physical RAM in gigabytes.
   final double totalRamGb;
 
+  /// Detected free / available RAM in gigabytes at detection time.
+  ///
+  /// On macOS this is the sum of free + inactive pages reported by `vm_stat`.
+  /// On Windows this is `FreePhysicalMemory` from WMIC.
+  /// Falls back to [totalRamGb] if detection fails (conservatively assumes all RAM is free).
+  final double freeRamGb;
+
   /// The RAM capacity tier used for context window selection.
   final RamTier ramTier;
 
@@ -107,6 +114,7 @@ class HardwareInfo {
   /// Creates a [HardwareInfo] snapshot.
   const HardwareInfo({
     required this.totalRamGb,
+    required this.freeRamGb,
     required this.ramTier,
     required this.inferenceBackend,
     required this.backendDisplayName,
@@ -115,6 +123,7 @@ class HardwareInfo {
   @override
   String toString() =>
       'HardwareInfo(ram=${totalRamGb.toStringAsFixed(1)}GB, '
+      'free=${freeRamGb.toStringAsFixed(1)}GB, '
       'tier=$ramTier, backend=$inferenceBackend)';
 }
 
@@ -137,12 +146,14 @@ class HardwareDetector {
   /// Falls back to safe defaults if any subprocess call fails.
   static Future<HardwareInfo> detect() async {
     final totalRamGb = await _detectRamGb();
+    final freeRamGb = await _detectFreeRamGb(totalRamGb);
     final ramTier = _classifyRam(totalRamGb);
     final backend = await _detectBackend();
     final displayName = _backendDisplayName(backend);
 
     return HardwareInfo(
       totalRamGb: totalRamGb,
+      freeRamGb: freeRamGb,
       ramTier: ramTier,
       inferenceBackend: backend,
       backendDisplayName: displayName,
@@ -150,7 +161,7 @@ class HardwareDetector {
   }
 
   // -------------------------------------------------------------------------
-  // RAM detection
+  // RAM detection (total + free)
   // -------------------------------------------------------------------------
 
   static Future<double> _detectRamGb() async {
@@ -164,6 +175,67 @@ class HardwareDetector {
       // Fall through to safe default.
     }
     return 16.0; // conservative fallback
+  }
+
+  /// Returns the approximate available (free + reclaimable) RAM in GB.
+  ///
+  /// Falls back to [totalRamGb] on any error so callers can treat the
+  /// result as a lower-bound: if we can't measure it we assume it's fine.
+  static Future<double> _detectFreeRamGb(double totalRamGb) async {
+    try {
+      if (Platform.isMacOS) return await _macFreeRamGb();
+      if (Platform.isWindows) return await _windowsFreeRamGb();
+    } catch (_) {}
+    return totalRamGb; // unknown → assume all free (conservative)
+  }
+
+  /// Parses `vm_stat` output on macOS.
+  ///
+  /// Uses free + inactive pages — inactive pages are quickly reclaimable
+  /// and Ollama (Metal) benefits from them just like free pages.
+  static Future<double> _macFreeRamGb() async {
+    final result = await Process.run('vm_stat', []);
+    if (result.exitCode != 0) return 0;
+    final output = result.stdout as String;
+
+    // Page size line: "Mach Virtual Memory Statistics: (page size of 16384 bytes)"
+    int pageSize = 16384; // Apple Silicon default
+    final pageSizeMatch =
+        RegExp(r'page size of (\d+) bytes').firstMatch(output);
+    if (pageSizeMatch != null) {
+      pageSize = int.tryParse(pageSizeMatch.group(1)!) ?? pageSize;
+    }
+
+    int _pages(String key) {
+      final match = RegExp('$key:\\s+(\\d+)\\.').firstMatch(output);
+      return int.tryParse(match?.group(1) ?? '0') ?? 0;
+    }
+
+    final freePages = _pages('Pages free');
+    final inactivePages = _pages('Pages inactive');
+    final speculativePages = _pages('Pages speculative');
+    final totalFreeBytes =
+        (freePages + inactivePages + speculativePages) * pageSize;
+    return totalFreeBytes / (1024 * 1024 * 1024);
+  }
+
+  /// Reads `FreePhysicalMemory` via WMIC on Windows (value is in KB).
+  static Future<double> _windowsFreeRamGb() async {
+    final result = await Process.run(
+      'wmic',
+      ['OS', 'get', 'FreePhysicalMemory'],
+      runInShell: true,
+    );
+    if (result.exitCode != 0) return 0;
+    final lines = (result.stdout as String)
+        .split('\n')
+        .map((l) => l.trim())
+        .where((l) => l.isNotEmpty)
+        .toList();
+    // Lines: ["FreePhysicalMemory", "12345678"]
+    if (lines.length < 2) return 0;
+    final kb = int.tryParse(lines[1]) ?? 0;
+    return kb / (1024 * 1024);
   }
 
   /// Reads `hw.memsize` from sysctl on macOS.

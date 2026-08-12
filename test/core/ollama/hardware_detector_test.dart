@@ -3,6 +3,7 @@ import 'package:deep_think/core/ollama/hardware_detector.dart';
 
 HardwareInfo _info(RamTier tier) => HardwareInfo(
       totalRamGb: 32.0,
+      freeRamGb: 32.0,
       ramTier: tier,
       inferenceBackend: InferenceBackend.cpu,
       backendDisplayName: 'CPU (no GPU acceleration)',
@@ -67,12 +68,14 @@ void main() {
       test('includes RAM, tier, and backend', () {
         final info = HardwareInfo(
           totalRamGb: 64.0,
+          freeRamGb: 64.0,
           ramTier: RamTier.tier64,
           inferenceBackend: InferenceBackend.appleMetal,
           backendDisplayName: 'Apple Metal (GPU)',
         );
         final s = info.toString();
         expect(s, contains('64.0GB'));
+        expect(s, contains('free=64.0GB'));
         expect(s, contains('tier64'));
         expect(s, contains('appleMetal'));
       });
@@ -93,6 +96,7 @@ void main() {
     test('RAM below 40 GB maps to tier32 behaviour (ctx=8192)', () {
       final info = HardwareInfo(
         totalRamGb: 32.0,
+        freeRamGb: 32.0,
         ramTier: RamTier.tier32,
         inferenceBackend: InferenceBackend.cpu,
         backendDisplayName: 'CPU (no GPU acceleration)',
@@ -103,6 +107,7 @@ void main() {
     test('RAM of 48 GB maps to tier48 behaviour (ctx=16384)', () {
       final info = HardwareInfo(
         totalRamGb: 48.0,
+        freeRamGb: 48.0,
         ramTier: RamTier.tier48,
         inferenceBackend: InferenceBackend.cuda,
         backendDisplayName: 'NVIDIA CUDA (GPU)',

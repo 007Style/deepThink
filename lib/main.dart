@@ -5,6 +5,8 @@
 //   2. If any models missing  → WelcomeScreen (greet user, ask permission to download).
 //   3. If all models present  → WelcomeScreen (greet user, show where models live, go).
 //   4. After welcome          → StartupConfigScreen (configure & launch session).
+import 'dart:ui' show PlatformDispatcher;
+
 import 'package:flutter/material.dart';
 
 import 'core/ollama/hardware_detector.dart';
@@ -14,12 +16,27 @@ import 'core/ollama/model_status_info.dart';
 import 'core/ollama/ollama_client.dart';
 import 'core/ollama/ollama_launcher.dart';
 import 'ui/avatars/avatar_registry.dart';
+import 'ui/screens/resource_gate_screen.dart';
 import 'ui/screens/welcome_screen.dart';
 import 'ui/widgets/app_theme.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   AvatarRegistry.registerDefaults();
+
+  // Catch all unhandled Flutter framework errors and print them so
+  // we can see silent crashes in the terminal.
+  FlutterError.onError = (FlutterErrorDetails details) {
+    FlutterError.dumpErrorToConsole(details);
+  };
+
+  // Catch all unhandled async / platform errors.
+  PlatformDispatcher.instance.onError = (error, stack) {
+    // ignore: avoid_print
+    print('UNCAUGHT ERROR: $error\n$stack');
+    return true; // keep the app alive — show the error screen instead of crashing
+  };
+
   runApp(const DeepThinkApp());
 }
 
@@ -111,8 +128,16 @@ class _AppLoaderState extends State<_AppLoader> {
       return _ErrorScreen(message: _errorMessage!);
     }
 
-    // Navigate to WelcomeScreen — it handles both first-launch and
-    // already-installed cases gracefully with a proper greeting.
+    // If RAM is tight, show the live Resource Gate so the user can free up
+    // memory and watch deepThink self-provision in real time.
+    if (_hardware!.freeRamGb < 24.0) {
+      return ResourceGateScreen(
+        hardware: _hardware!,
+        modelStatuses: _modelStatuses!,
+      );
+    }
+
+    // Enough RAM — go straight to the welcome/config flow.
     return WelcomeScreen(
       hardware: _hardware!,
       modelStatuses: _modelStatuses!,

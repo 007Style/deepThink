@@ -5,6 +5,7 @@ import 'package:deep_think/core/ollama/hardware_detector.dart';
 
 HardwareInfo _hardware(RamTier tier) => HardwareInfo(
       totalRamGb: 32.0,
+      freeRamGb: 32.0,
       ramTier: tier,
       inferenceBackend: InferenceBackend.appleMetal,
       backendDisplayName: 'Apple Metal (GPU)',
