@@ -118,6 +118,11 @@ class InferenceWorker {
   // Passed through to _runInference so the model cannot pass on user input.
   bool _pendingIsUserMessage = false;
 
+  // When paused, new scheduling is blocked.  Any in-flight inference is
+  // allowed to finish naturally; the pending flag is still set so the
+  // response fires immediately on resume.
+  bool _paused = false;
+
   /// Creates an [InferenceWorker].
   InferenceWorker({
     required this.participant,
@@ -174,13 +179,47 @@ class InferenceWorker {
   // Core inference loop
   // -------------------------------------------------------------------------
 
+  /// Pauses all inference immediately.
+  ///
+  /// Aborts any in-flight HTTP stream by force-closing the underlying
+  /// [HttpClient].  The aborted [generateStream] call throws, which is caught
+  /// by [_runInference]'s catch block, causing it to emit a `done` event and
+  /// clear [_inferencing].  New scheduling is also blocked.
+  void pause() {
+    _paused = true;
+    if (_inferencing) {
+      // Force-close the HTTP connection — this causes the awaited
+      // generateStream to throw, unwinding the inference cleanly.
+      client.abortInFlight();
+    }
+  }
+
+  /// Resumes scheduling.  If a response was pending while paused, it fires now.
+  void resume(List<Participant> allParticipants) {
+    if (!_paused) return;
+    _paused = false;
+    if (_pendingResponse && _running && !_inferencing) {
+      final wasUser = _pendingIsUserMessage;
+      _pendingResponse = false;
+      _pendingIsUserMessage = false;
+      _scheduleResponse(allParticipants, forceRespond: wasUser);
+    }
+  }
+
   void _scheduleResponse(List<Participant> allParticipants,
       {bool forceRespond = false}) {
+    if (_paused) {
+      // Don't schedule — mark pending so it fires on resume.
+      _pendingResponse = true;
+      if (forceRespond) _pendingIsUserMessage = true;
+      return;
+    }
+
     // Random jitter: 200–800 ms to stagger AI responses naturally.
     final jitter = Duration(milliseconds: 200 + _rng.nextInt(601));
 
     Timer(jitter, () {
-      if (!_running) return;
+      if (!_running || _paused) return;
       _runInference(allParticipants, forceRespond: forceRespond);
     });
   }
@@ -228,11 +267,13 @@ class InferenceWorker {
       // Record token usage (estimate from response length).
       contextManager.recordFromText(participant.name, fullResponse);
 
-      // Append message to shared log.
+      // Append message to shared log — stamp with current round index so the
+      // UI can group this response with others triggered by the same message.
       final message = Message(
         participantName: participant.name,
         content: fullResponse,
         isUser: false,
+        roundIndex: log.currentRoundIndex,
       );
       log.append(message);
 
@@ -250,7 +291,9 @@ class InferenceWorker {
     } finally {
       _inferencing = false;
 
-      if (_pendingResponse && _running) {
+      // Don't re-schedule if paused or stopped — _scheduleResponse will
+      // handle it on resume() or the next message respectively.
+      if (_pendingResponse && _running && !_paused) {
         final wasUser = _pendingIsUserMessage;
         _pendingResponse = false;
         _pendingIsUserMessage = false;

@@ -16,7 +16,7 @@
 [![Ollama](https://img.shields.io/badge/Ollama-v0.32.9-FF6B35?style=flat-square)](https://ollama.com)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-132%20passing-brightgreen?style=flat-square)](#testing)
-[![Version](https://img.shields.io/badge/version-v1.0.1-blue?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v1.0.2-blue?style=flat-square)](CHANGELOG.md)
 
 *From the minds of **Daneyand** & **IBM's Bob** · daneyand@ibm.com*
 
@@ -108,6 +108,12 @@ All four models run **simultaneously** — no round-robin, no waiting for one to
 ### 💬 You're Always in the Room
 Hit Enter any time. The models will stop mid-debate and respond directly to you. Every AI is instructed it **must** respond to human input — no passing, no ignoring, no filler.
 
+### ⏸ Pause & Resume
+Pause the conversation at any time — all in-flight AI responses are aborted cleanly. Resume to pick up where you left off, or send a message while paused to auto-resume.
+
+### ⚙️ Reconfigure Without Restarting
+Press the **Configure** button in the top bar at any time to stop the session, unload all models, and return to the config screen — ready to set up a new session with different models or a fresh topic. Your last-used model and prompt choices are pre-filled.
+
 ### 🔄 Smart Context Management
 Each model's context window is tracked. When an AI hits 90% capacity, it gracefully resets using the last 2 messages per participant as a seed — so the conversation continues without a hard break.
 
@@ -120,6 +126,9 @@ Not enough free RAM? deepThink shows you a live command centre with:
 - The top memory-consuming processes — with AI tools highlighted
 - Per-model readiness as your RAM clears up
 - **Auto-provisioning** the moment you free enough memory — no button needed
+
+### 📝 Session Transcripts
+Every session is automatically saved to `~/Documents/deepThink/sessions/` as a plain-text transcript. Access them any time from **Help → Session Transcripts**.
 
 ### 🏠 Fully Offline
 After the one-time model download (~22.5 GB), deepThink never touches the internet again. No telemetry. No analytics. No license checks.
@@ -161,7 +170,7 @@ On Apple Silicon, model weights live in the unified memory pool shared with the 
 
 ### Option A — Download DMG *(easiest)*
 
-1. Download `deepThink-v1.0.1.dmg` from [Releases](https://github.com/007Style/deepThink/releases)
+1. Download `deepThink-v1.0.2.dmg` from [Releases](https://github.com/007Style/deepThink/releases)
 2. Open the DMG
 3. Drag **deepThink** to your Applications folder
 4. Launch — deepThink handles the rest
@@ -207,6 +216,7 @@ Full instructions: [`DEVELOPMENT.md`](DEVELOPMENT.md)
                              DEEP opens the conversation
                              Watch them think, agree, disagree
                              Type anything — they'll respond
+                             Press ⚙ Configure to return to config
 ```
 
 ---
@@ -322,7 +332,7 @@ The four characters have assigned models by default. In the Config screen you ca
 models to characters. Any model already installed in your `~/.ollama/models/` folder will appear.
 
 **Q: Why does deepThink bundle Ollama instead of using the installed version?**
-To guarantee a known-good runtime version and eliminate setup friction. deepThink v1.0.1
+To guarantee a known-good runtime version and eliminate setup friction. deepThink v1.0.2
 bundles Ollama v0.32.9. If you have a system Ollama running on port 11434, deepThink will
 detect it and use it rather than launching its own copy.
 
@@ -363,7 +373,7 @@ in interesting ways — which is the point.
 
 ---
 
-*deepThink v1.0.1 · macOS · Flutter · Ollama · Built with ❤️ and IBM heritage*
+*deepThink v1.0.2 · macOS · Flutter · Ollama · Built with ❤️ and IBM heritage*
 
 *From the minds of Daneyand & IBM's Bob*
 

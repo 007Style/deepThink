@@ -28,6 +28,15 @@ class ConversationLog {
   final StreamController<Message> _controller =
       StreamController<Message>.broadcast();
 
+  /// Current conversation round index (incremented by each trigger message).
+  ///
+  /// A "trigger" is any user message or the initial kickoff message.
+  /// All AI responses to a trigger share the same [currentRoundIndex].
+  int _currentRoundIndex = 0;
+
+  /// The current round index — assign this to AI response messages.
+  int get currentRoundIndex => _currentRoundIndex;
+
   /// All messages in insertion order.
   List<Message> get allMessages => List.unmodifiable(_messages);
 
@@ -35,7 +44,15 @@ class ConversationLog {
   Stream<Message> get messageStream => _controller.stream;
 
   /// Appends [message] to the log and emits it on [messageStream].
+  ///
+  /// If [message.isUser] is `true` (or the message is the System kickoff),
+  /// the round index is incremented so subsequent AI responses are grouped
+  /// in a new band.
   void append(Message message) {
+    // Increment round on user messages and System kickoff.
+    if (message.isUser || message.participantName == 'System') {
+      _currentRoundIndex++;
+    }
     _messages.add(message);
     _controller.add(message);
   }

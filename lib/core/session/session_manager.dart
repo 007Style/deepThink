@@ -71,6 +71,9 @@ class SessionManager {
   static String _sessionsDir() =>
       [_baseDir(), 'sessions'].join(Platform.pathSeparator);
 
+  /// Public accessor so the UI can open the sessions directory in Finder.
+  static String sessionsDir() => _sessionsDir();
+
   /// Returns the absolute path to `stats.json`.
   static String _statsPath() =>
       [_baseDir(), 'stats.json'].join(Platform.pathSeparator);
@@ -111,13 +114,16 @@ class SessionManager {
         : _nameGenerator.generateUnique(_usedNames);
     _usedNames.add(sessionName);
 
-    final now = DateTime.now().toUtc();
+    final now = DateTime.now().toLocal();
     final id = 'session-${now.millisecondsSinceEpoch}';
 
     // Sanitise name for use as a filename (replace spaces with underscores,
     // strip characters that are illegal on Windows).
     final safeName = sessionName.replaceAll(RegExp(r'[<>:"/\\|?*\s]'), '_');
-    final logFileName = '${safeName}_${now.millisecondsSinceEpoch}.txt';
+    // Use a human-readable datetime suffix so the filename sorts and reads well.
+    final dateSuffix = '${now.year}-${_p(now.month)}-${_p(now.day)}'
+        '_${_p(now.hour)}-${_p(now.minute)}-${_p(now.second)}';
+    final logFileName = '${safeName}_$dateSuffix.txt';
     final logFilePath =
         [_sessionsDir(), logFileName].join(Platform.pathSeparator);
 
@@ -161,8 +167,10 @@ class SessionManager {
         // Write formatted line immediately (non-blocking IOSink).
         sink.writeln(message.toPlainText());
       },
-      onDone: () => sink.flush().then((_) => sink.close()),
-      onError: (_) => sink.flush().then((_) => sink.close()),
+      // Do NOT close the sink here — endSession owns the sink lifecycle.
+      // Closing it twice (once here, once in endSession) can cause a hang.
+      onDone: () {},
+      onError: (_) {},
       cancelOnError: false,
     );
 

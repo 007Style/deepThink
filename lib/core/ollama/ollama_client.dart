@@ -80,7 +80,7 @@ class OllamaClient {
   /// HTTP request timeout for non-streaming calls.
   final Duration timeout;
 
-  final HttpClient _http;
+  HttpClient _http;
 
   /// Creates an [OllamaClient].
   ///
@@ -90,7 +90,16 @@ class OllamaClient {
     this.baseUrl = 'http://localhost:11434',
     this.timeout = const Duration(seconds: 30),
   }) : _http = HttpClient()
-          ..connectionTimeout = const Duration(seconds: 10);
+            ..connectionTimeout = const Duration(seconds: 10);
+
+  /// Immediately aborts all in-flight HTTP connections on this client.
+  ///
+  /// Used by [InferenceWorker.pause] to hard-stop any streaming inference
+  /// mid-response. A new [HttpClient] is created so the client stays usable.
+  void abortInFlight() {
+    _http.close(force: true);
+    _http = HttpClient()..connectionTimeout = const Duration(seconds: 10);
+  }
 
   // -------------------------------------------------------------------------
   // Health check
@@ -312,6 +321,29 @@ class OllamaClient {
       } catch (_) {
         // Malformed trailing data — ignore.
       }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Model management
+  // -------------------------------------------------------------------------
+
+  /// Asks Ollama to unload [modelTag] from GPU/RAM immediately.
+  ///
+  /// Sends `POST /api/generate` with `keep_alive: 0`.  Ollama evicts the
+  /// model from memory on the next idle cycle.  Errors are silently swallowed
+  /// — if the model wasn't loaded this is a no-op.
+  Future<void> unloadModel(String modelTag) async {
+    try {
+      await Future<void>(() async {
+        final body = jsonEncode({'model': modelTag, 'keep_alive': 0});
+        final request = await _postRequest('/api/generate');
+        request.add(utf8.encode(body));
+        final response = await request.close();
+        await response.drain<void>();
+      }).timeout(const Duration(seconds: 5));
+    } catch (_) {
+      // Not loaded, already gone, or timed out — that's fine.
     }
   }
 

@@ -5,17 +5,17 @@
 //   2. If any models missing  → WelcomeScreen (greet user, ask permission to download).
 //   3. If all models present  → WelcomeScreen (greet user, show where models live, go).
 //   4. After welcome          → StartupConfigScreen (configure & launch session).
+import 'dart:io' show ProcessSignal, exit;
 import 'dart:ui' show PlatformDispatcher;
 
 import 'package:flutter/material.dart';
 
 import 'core/ollama/hardware_detector.dart';
 import 'core/ollama/model_manager.dart';
-import 'core/ollama/model_registry.dart';
-import 'core/ollama/model_status_info.dart';
 import 'core/ollama/ollama_client.dart';
 import 'core/ollama/ollama_launcher.dart';
 import 'ui/avatars/avatar_registry.dart';
+import 'ui/screens/external_ollama_screen.dart';
 import 'ui/screens/resource_gate_screen.dart';
 import 'ui/screens/welcome_screen.dart';
 import 'ui/widgets/app_theme.dart';
@@ -23,6 +23,15 @@ import 'ui/widgets/app_theme.dart';
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   AvatarRegistry.registerDefaults();
+
+  // Belt-and-suspenders: if the Dart VM exits for any reason (crash, signal,
+  // etc.) kill the Ollama process we may have spawned.  AppDelegate handles
+  // the normal ⌘Q / window-close case; this covers everything else.
+  ProcessSignal.sigterm.watch().listen((_) => OllamaLauncher.killAll());
+  ProcessSignal.sigint.watch().listen((_) {
+    OllamaLauncher.killAll();
+    exit(0);
+  });
 
   // Catch all unhandled Flutter framework errors and print them so
   // we can see silent crashes in the terminal.
@@ -76,6 +85,7 @@ class _AppLoaderState extends State<_AppLoader> {
   HardwareInfo? _hardware;
   List<ModelStatus>? _modelStatuses;
   String? _errorMessage;
+  ExternalOllamaException? _externalOllama;
 
   @override
   void initState() {
@@ -84,11 +94,29 @@ class _AppLoaderState extends State<_AppLoader> {
   }
 
   Future<void> _initialize() async {
+    // Reset any previous error state when retrying.
+    if (mounted) {
+      setState(() {
+        _done = false;
+        _errorMessage = null;
+        _externalOllama = null;
+        _status = 'Starting Ollama\u2026';
+      });
+    }
+
     try {
       // ── Step 1: Start Ollama ───────────────────────────────────────────────
       _setStatus('Starting Ollama\u2026');
       final launcher = OllamaLauncher();
+      // Show a more informative message after a few seconds if Ollama is
+      // still initialising (e.g. loading GPU runtime on first launch).
+      final slowTimer = Future<void>.delayed(
+        const Duration(seconds: 5),
+        () => _setStatus(
+            'Starting Ollama\u2026 (this may take a minute on first launch)'),
+      );
       await launcher.start();
+      slowTimer.ignore();
 
       // ── Step 2: Detect hardware ────────────────────────────────────────────
       _setStatus('Detecting hardware\u2026');
@@ -103,6 +131,13 @@ class _AppLoaderState extends State<_AppLoader> {
       setState(() {
         _hardware = hardware;
         _modelStatuses = statuses;
+        _done = true;
+      });
+    } on ExternalOllamaException catch (e) {
+      // Port is blocked by a foreign process — show the dedicated screen.
+      if (!mounted) return;
+      setState(() {
+        _externalOllama = e;
         _done = true;
       });
     } catch (e) {
@@ -122,6 +157,14 @@ class _AppLoaderState extends State<_AppLoader> {
   Widget build(BuildContext context) {
     if (!_done) {
       return _SplashScreen(status: _status);
+    }
+
+    // Port is held by a foreign Ollama — let the user kill it and retry.
+    if (_externalOllama != null) {
+      return ExternalOllamaScreen(
+        error: _externalOllama!,
+        onRetry: _initialize,
+      );
     }
 
     if (_errorMessage != null) {
@@ -172,7 +215,7 @@ class _SplashScreen extends StatelessWidget {
             ),
             const SizedBox(height: 6),
             const Text(
-              'v1.0.1',
+              'v1.0.2',
               style: TextStyle(
                 fontSize: 12,
                 color: AppColors.textSecondary,

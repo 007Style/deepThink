@@ -1,7 +1,12 @@
 // Single AI character panel for the deepThink quadrant grid.
 //
-// Displays avatar, character name, model badge, live streaming tokens,
-// and a "thinking…" indicator while inferring.
+// Each panel shows:
+//   • This AI's own responses (streamed live, then committed)
+//   • User messages interleaved in chronological order
+//   • Subtle round-banding so you can see which responses belong together
+//
+// The ScrollController is supplied externally so the QuadrantGrid can
+// synchronise scrolling across all four panels.
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -14,21 +19,39 @@ import '../avatars/energy_orb/orb_config.dart';
 import '../widgets/app_theme.dart';
 
 // ---------------------------------------------------------------------------
+// Round palette — subtle background tints cycling per conversation round.
+// A "round" is the set of responses triggered by the same user/kickoff message.
+// ---------------------------------------------------------------------------
+
+/// Six very dark background tints that cycle per round index.
+const List<Color> _kRoundColors = [
+  Color(0xFF0D1220), // indigo tint
+  Color(0xFF130D20), // violet tint
+  Color(0xFF0D1A13), // teal tint
+  Color(0xFF1A130D), // amber tint
+  Color(0xFF1A0D0D), // rose tint
+  Color(0xFF0D1A1A), // cyan tint
+];
+
+Color _roundColor(int roundIndex) =>
+    _kRoundColors[roundIndex % _kRoundColors.length];
+
+// ---------------------------------------------------------------------------
 // AiQuadrant
 // ---------------------------------------------------------------------------
 
 /// A self-contained panel for one AI participant.
 ///
-/// - Header: avatar + character name + model badge
-/// - Body: scrollable message history + live streaming area
-/// - Footer indicator: animated "thinking…" dots when [isThinking]
+/// - Header  : avatar + character name + model badge
+/// - Body    : scrollable message history (own + user only) + live streaming
+/// - Footer  : animated "thinking…" dots while [isThinking]
+///
+/// [scrollController] is owned by [QuadrantGrid] so all panels stay in sync.
 class AiQuadrant extends StatefulWidget {
   /// The AI participant this quadrant represents.
   final Participant participant;
 
-  /// Completed messages from the shared conversation log for this participant
-  /// AND all other participants (all messages are shown in each quadrant,
-  /// but the name prefix distinguishes speakers).
+  /// Only messages from this participant and the user (no other AIs).
   final List<Message> messages;
 
   /// Current avatar animation state.
@@ -38,9 +61,10 @@ class AiQuadrant extends StatefulWidget {
   final bool isThinking;
 
   /// Stream of raw token strings for the live-streaming text area.
-  ///
-  /// Each event is a new token to append to the current response buffer.
   final Stream<String> tokenStream;
+
+  /// External scroll controller — supplied by [QuadrantGrid] for sync.
+  final ScrollController scrollController;
 
   const AiQuadrant({
     required this.participant,
@@ -48,6 +72,7 @@ class AiQuadrant extends StatefulWidget {
     required this.avatarState,
     required this.isThinking,
     required this.tokenStream,
+    required this.scrollController,
     super.key,
   });
 
@@ -55,10 +80,7 @@ class AiQuadrant extends StatefulWidget {
   State<AiQuadrant> createState() => _AiQuadrantState();
 }
 
-class _AiQuadrantState extends State<AiQuadrant>
-    with SingleTickerProviderStateMixin {
-  final ScrollController _scroll = ScrollController();
-
+class _AiQuadrantState extends State<AiQuadrant> {
   /// Tokens that have streamed in during the current generation turn.
   final StringBuffer _liveBuffer = StringBuffer();
   String _liveText = '';
@@ -66,24 +88,37 @@ class _AiQuadrantState extends State<AiQuadrant>
   StreamSubscription<String>? _tokenSub;
 
   // Thinking-dots animation
-  late final AnimationController _dotsCtrl;
   int _dotCount = 0;
   Timer? _dotsTimer;
+
+  // ---------------------------------------------------------------------------
+  // Auto-scroll lock
+  // ---------------------------------------------------------------------------
+
+  /// Whether the user has scrolled away from the bottom.
+  /// When true, auto-scroll is suspended so they can read without interruption.
+  bool _userScrolledUp = false;
+
+  /// Small threshold — if within this many pixels of the bottom, treat as
+  /// "at bottom" and re-enable auto-scroll automatically.
+  static const double _atBottomThreshold = 40.0;
 
   @override
   void initState() {
     super.initState();
-    _dotsCtrl = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 600),
-    );
     _subscribeToTokens();
     _updateDotsTimer();
+    // Start listening for manual scroll gestures.
+    widget.scrollController.addListener(_onScrollChanged);
   }
 
   @override
   void didUpdateWidget(AiQuadrant old) {
     super.didUpdateWidget(old);
+    if (old.scrollController != widget.scrollController) {
+      old.scrollController.removeListener(_onScrollChanged);
+      widget.scrollController.addListener(_onScrollChanged);
+    }
     if (old.tokenStream != widget.tokenStream) {
       _tokenSub?.cancel();
       _subscribeToTokens();
@@ -91,13 +126,17 @@ class _AiQuadrantState extends State<AiQuadrant>
     if (old.isThinking != widget.isThinking) {
       _updateDotsTimer();
     }
-    // When a new completed message arrives, clear the live buffer.
+    // When a new completed message arrives (for this participant), clear the
+    // live buffer — the completed text is now in widget.messages.
     if (old.messages.length != widget.messages.length) {
-      setState(() {
-        _liveBuffer.clear();
-        _liveText = '';
-      });
-      _scrollToBottom();
+      final latest = widget.messages.isNotEmpty ? widget.messages.last : null;
+      if (latest != null && !latest.isUser) {
+        setState(() {
+          _liveBuffer.clear();
+          _liveText = '';
+        });
+      }
+      _maybeScrollToBottom();
     }
   }
 
@@ -105,7 +144,7 @@ class _AiQuadrantState extends State<AiQuadrant>
     _tokenSub = widget.tokenStream.listen((token) {
       _liveBuffer.write(token);
       setState(() => _liveText = _liveBuffer.toString());
-      _scrollToBottom();
+      _maybeScrollToBottom();
     });
   }
 
@@ -113,18 +152,56 @@ class _AiQuadrantState extends State<AiQuadrant>
     _dotsTimer?.cancel();
     if (widget.isThinking) {
       _dotsTimer = Timer.periodic(const Duration(milliseconds: 400), (_) {
-        setState(() => _dotCount = (_dotCount + 1) % 4);
+        if (mounted) setState(() => _dotCount = (_dotCount + 1) % 4);
       });
     } else {
       _dotCount = 0;
     }
   }
 
+  /// Called whenever the scroll position changes.
+  /// Only cares about the at-bottom → re-enable auto-scroll transition.
+  void _onScrollChanged() {
+    final ctrl = widget.scrollController;
+    if (!ctrl.hasClients) return;
+    final pos = ctrl.position;
+    final distanceFromBottom = pos.maxScrollExtent - pos.pixels;
+    final atBottom = distanceFromBottom <= _atBottomThreshold;
+
+    // If the user has scrolled back to the bottom, re-enable auto-scroll.
+    if (atBottom && _userScrolledUp) {
+      if (mounted) setState(() => _userScrolledUp = false);
+    }
+  }
+
+  /// Called by the [NotificationListener] on the ListView when a user drag
+  /// or fling starts.  This is the correct way to distinguish user gestures
+  /// from programmatic scrolls.
+  bool _onScrollNotification(ScrollNotification n) {
+    if (n is UserScrollNotification) {
+      final ctrl = widget.scrollController;
+      if (!ctrl.hasClients) return false;
+      final distanceFromBottom =
+          ctrl.position.maxScrollExtent - ctrl.position.pixels;
+      if (distanceFromBottom > _atBottomThreshold && !_userScrolledUp) {
+        if (mounted) setState(() => _userScrolledUp = true);
+      }
+    }
+    return false; // don't absorb the notification
+  }
+
+  /// Scrolls to the bottom only when the user has not manually scrolled away.
+  void _maybeScrollToBottom() {
+    if (_userScrolledUp) return;
+    _scrollToBottom();
+  }
+
   void _scrollToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scroll.hasClients) {
-        _scroll.animateTo(
-          _scroll.position.maxScrollExtent,
+      final ctrl = widget.scrollController;
+      if (ctrl.hasClients) {
+        ctrl.animateTo(
+          ctrl.position.maxScrollExtent,
           duration: const Duration(milliseconds: 120),
           curve: Curves.easeOut,
         );
@@ -132,12 +209,17 @@ class _AiQuadrantState extends State<AiQuadrant>
     });
   }
 
+  /// Force-scrolls to the bottom and re-enables auto-scroll.
+  void _jumpToLatest() {
+    setState(() => _userScrolledUp = false);
+    _scrollToBottom();
+  }
+
   @override
   void dispose() {
+    widget.scrollController.removeListener(_onScrollChanged);
     _tokenSub?.cancel();
     _dotsTimer?.cancel();
-    _dotsCtrl.dispose();
-    _scroll.dispose();
     super.dispose();
   }
 
@@ -145,15 +227,7 @@ class _AiQuadrantState extends State<AiQuadrant>
   // Helpers
   // -------------------------------------------------------------------------
 
-  Color _characterColor() {
-    final config = OrbConfig.forCharacter(widget.participant.name);
-    return config.primaryColor;
-  }
-
-  Color _nameColor(String participantName) {
-    final config = OrbConfig.forCharacter(participantName);
-    return config.primaryColor;
-  }
+  Color _characterColor() => OrbConfig.forCharacter(widget.participant.name).primaryColor;
 
   // -------------------------------------------------------------------------
   // Build
@@ -178,13 +252,29 @@ class _AiQuadrantState extends State<AiQuadrant>
             charColor: charColor,
           ),
           const Divider(height: 1, thickness: 1, color: AppColors.border),
-          Expanded(child: _MessageArea(
-            messages: widget.messages,
-            liveText: _liveText,
-            liveParticipantName: widget.participant.name,
-            scroll: _scroll,
-            nameColorFn: _nameColor,
-          )),
+          Expanded(
+            child: Stack(
+              children: [
+                NotificationListener<ScrollNotification>(
+                  onNotification: _onScrollNotification,
+                  child: _MessageArea(
+                    messages: widget.messages,
+                    liveText: _liveText,
+                    ownerName: widget.participant.name,
+                    scroll: widget.scrollController,
+                    charColor: charColor,
+                  ),
+                ),
+                // "Jump to Latest" pill — only shown when auto-scroll is locked.
+                if (_userScrolledUp)
+                  Positioned(
+                    bottom: 8,
+                    right: 8,
+                    child: _JumpToLatestButton(onTap: _jumpToLatest),
+                  ),
+              ],
+            ),
+          ),
           if (widget.isThinking)
             _ThinkingIndicator(
               dotCount: _dotCount,
@@ -217,7 +307,6 @@ class _Header extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       child: Row(
         children: [
-          // Avatar
           AvatarRegistry.build(
             'energyOrb',
             state: avatarState,
@@ -225,7 +314,6 @@ class _Header extends StatelessWidget {
             size: 52,
           ),
           const SizedBox(width: 10),
-          // Name + model badge
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -269,7 +357,6 @@ class _Header extends StatelessWidget {
 
 class _ModelBadge extends StatelessWidget {
   final String modelId;
-
   const _ModelBadge({required this.modelId});
 
   @override
@@ -297,27 +384,34 @@ class _ModelBadge extends StatelessWidget {
 // _MessageArea
 // ---------------------------------------------------------------------------
 
+/// Scrollable list of message rows with round-based color banding.
+///
+/// Each "round" — contiguous block of messages sharing the same [roundIndex]
+/// — gets a faint background tint so it's visually clear which responses
+/// belong together across all four panels.
 class _MessageArea extends StatelessWidget {
   final List<Message> messages;
   final String liveText;
-  final String liveParticipantName;
+  final String ownerName;
   final ScrollController scroll;
-  final Color Function(String) nameColorFn;
+  final Color charColor;
 
   const _MessageArea({
     required this.messages,
     required this.liveText,
-    required this.liveParticipantName,
+    required this.ownerName,
     required this.scroll,
-    required this.nameColorFn,
+    required this.charColor,
   });
 
   @override
   Widget build(BuildContext context) {
+    final itemCount = messages.length + (liveText.isNotEmpty ? 1 : 0);
+
     return ListView.builder(
       controller: scroll,
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      itemCount: messages.length + (liveText.isNotEmpty ? 1 : 0),
+      padding: const EdgeInsets.symmetric(horizontal: 0, vertical: 0),
+      itemCount: itemCount,
       itemBuilder: (context, index) {
         if (index < messages.length) {
           final msg = messages[index];
@@ -325,19 +419,70 @@ class _MessageArea extends StatelessWidget {
           return _MessageRow(
             name: msg.participantName,
             content: msg.content,
-            nameColor: nameColorFn(msg.participantName),
             isUser: msg.isUser,
+            roundIndex: msg.roundIndex,
+            ownerColor: charColor,
           );
         }
-        // Live streaming row
+        // Live streaming row — always in the latest round.
+        final latestRound = messages.isNotEmpty
+            ? messages.last.roundIndex
+            : 0;
         return _MessageRow(
-          name: liveParticipantName,
+          name: ownerName,
           content: liveText,
-          nameColor: nameColorFn(liveParticipantName),
           isUser: false,
+          roundIndex: latestRound,
+          ownerColor: charColor,
           isStreaming: true,
         );
       },
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// _JumpToLatestButton
+// ---------------------------------------------------------------------------
+
+class _JumpToLatestButton extends StatelessWidget {
+  final VoidCallback onTap;
+  const _JumpToLatestButton({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppColors.accent.withValues(alpha: 0.5)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.35),
+              blurRadius: 6,
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: const [
+            Icon(Icons.arrow_downward_rounded,
+                size: 11, color: AppColors.accent),
+            SizedBox(width: 4),
+            Text(
+              'Jump to Latest',
+              style: TextStyle(
+                fontSize: 10,
+                color: AppColors.accent,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -349,43 +494,60 @@ class _MessageArea extends StatelessWidget {
 class _MessageRow extends StatelessWidget {
   final String name;
   final String content;
-  final Color nameColor;
   final bool isUser;
+  final int roundIndex;
+  final Color ownerColor;
   final bool isStreaming;
 
   const _MessageRow({
     required this.name,
     required this.content,
-    required this.nameColor,
     required this.isUser,
+    required this.roundIndex,
+    required this.ownerColor,
     this.isStreaming = false,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
+    final bg = _roundColor(roundIndex);
+
+    return Container(
+      color: bg,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       child: RichText(
         text: TextSpan(
           children: [
             TextSpan(
-              text: '$name: ',
-              style: TextStyle(
-                fontSize: 12,
+              text: isUser ? '$name  ' : '',
+              style: const TextStyle(
+                fontSize: 11,
                 fontWeight: FontWeight.w700,
-                color: isUser ? AppColors.accent : nameColor,
+                color: AppColors.accent,
+                letterSpacing: 0.5,
               ),
             ),
-            TextSpan(
-              text: content,
-              style: TextStyle(
-                fontSize: 12,
-                color: isStreaming
-                    ? AppColors.textPrimary.withValues(alpha: 0.85)
-                    : AppColors.textPrimary,
-                height: 1.5,
+            if (isUser)
+              TextSpan(
+                text: content,
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: AppColors.accent,
+                  height: 1.5,
+                  fontStyle: FontStyle.italic,
+                ),
+              )
+            else
+              TextSpan(
+                text: content,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: isStreaming
+                      ? AppColors.textPrimary.withValues(alpha: 0.80)
+                      : AppColors.textPrimary,
+                  height: 1.5,
+                ),
               ),
-            ),
           ],
         ),
       ),

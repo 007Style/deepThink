@@ -11,6 +11,7 @@ import 'dart:async';
 
 import '../context/context_manager.dart';
 import '../ollama/hardware_detector.dart';
+import '../ollama/model_registry.dart';
 import '../ollama/ollama_client.dart';
 import 'conversation_log.dart';
 import 'inference_worker.dart';
@@ -52,10 +53,16 @@ class ConversationEngine {
   final ContextManager _contextManager = ContextManager();
 
   List<InferenceWorker> _workers = [];
+  List<Participant> _participants = [];
   StreamSubscription<InferenceEvent>? _mergedSubscription;
-  StreamController<InferenceEvent>? _eventController;
+
+  // Initialised eagerly so eventStream can be subscribed to before start() is
+  // called — this is the safe pattern in both debug and release builds.
+  final StreamController<InferenceEvent> _eventController =
+      StreamController<InferenceEvent>.broadcast();
 
   bool _started = false;
+  bool _paused = false;
 
   /// Creates a [ConversationEngine].
   ConversationEngine({required this.client});
@@ -69,14 +76,10 @@ class ConversationEngine {
 
   /// Merged broadcast stream of [InferenceEvent]s from all four workers.
   ///
-  /// Available after [start] is called. Emitting events from all workers on
-  /// one stream simplifies UI subscription — consumers can filter by
-  /// [InferenceEvent.participantName].
-  Stream<InferenceEvent> get eventStream {
-    assert(_eventController != null,
-        'eventStream accessed before start() was called');
-    return _eventController!.stream;
-  }
+  /// Subscribe to this before or after calling [start] — it is safe either way
+  /// because the controller is created eagerly in the constructor.
+  /// Consumers can filter by [InferenceEvent.participantName].
+  Stream<InferenceEvent> get eventStream => _eventController.stream;
 
   /// Initialises all workers and begins the conversation.
   ///
@@ -84,12 +87,33 @@ class ConversationEngine {
   /// [hardware] is used by each worker for context window sizing.
   ///
   /// This method is idempotent — calling it when already started is a no-op.
+  /// Whether the engine is currently paused.
+  bool get isPaused => _paused;
+
+  /// Pauses all workers — new inference turns are blocked until [resume].
+  /// Any response currently streaming is allowed to complete.
+  void pause() {
+    if (!_started || _paused) return;
+    _paused = true;
+    for (final w in _workers) {
+      w.pause();
+    }
+  }
+
+  /// Resumes all workers.  Any pending responses fire immediately.
+  void resume() {
+    if (!_paused) return;
+    _paused = false;
+    for (final w in _workers) {
+      w.resume(_participants);
+    }
+  }
+
   Future<void> start(
       List<Participant> participants, HardwareInfo hardware) async {
     if (_started) return;
     _started = true;
-
-    _eventController = StreamController<InferenceEvent>.broadcast();
+    _participants = participants;
 
     _workers = participants
         .map(
@@ -109,8 +133,8 @@ class ConversationEngine {
     );
     _mergedSubscription = merged.listen(
       (event) {
-        if (!(_eventController?.isClosed ?? true)) {
-          _eventController!.add(event);
+        if (!_eventController.isClosed) {
+          _eventController.add(event);
         }
       },
       onError: (Object error) {
@@ -134,18 +158,32 @@ class ConversationEngine {
     _log.append(kickoff);
   }
 
-  /// Gracefully stops all workers and releases resources.
+  /// Gracefully stops all workers, unloads all models from Ollama memory,
+  /// and releases resources.
+  ///
+  /// Unloading keeps the Ollama process alive (fast to restart) while freeing
+  /// GPU/RAM so the user's machine isn't left holding loaded weights.
   ///
   /// After [stop] the engine cannot be restarted — create a new instance.
   Future<void> stop() async {
     _started = false;
-    await _mergedSubscription?.cancel();
+    _paused = false;
 
+    // Cancel the merged stream subscription first so no more events route up.
+    await _mergedSubscription?.cancel();
+    _mergedSubscription = null;
+
+    // Stop all workers (cancels log subscriptions, closes event controllers).
     await Future.wait(_workers.map((w) => w.stop()));
     _workers.clear();
 
-    await _eventController?.close();
-    _eventController = null;
+    // Unload every known model from Ollama so GPU/RAM is freed.
+    // Run in parallel — each call is a fire-and-forget POST with keep_alive=0.
+    await Future.wait(
+      ModelRegistry.all.map((m) => client.unloadModel(m.id)),
+    );
+
+    // Do not close _eventController — it's reusable across stop/start cycles.
 
     await _log.dispose();
   }

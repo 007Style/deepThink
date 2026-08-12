@@ -16,6 +16,9 @@ class StartStopButton extends StatefulWidget {
   /// Whether the conversation is currently running.
   final bool isRunning;
 
+  /// When true the button is greyed out and non-interactive (busy state).
+  final bool disabled;
+
   /// Called when the user presses Start.
   final VoidCallback onStart;
 
@@ -26,6 +29,7 @@ class StartStopButton extends StatefulWidget {
     required this.isRunning,
     required this.onStart,
     required this.onStop,
+    this.disabled = false,
     super.key,
   });
 
@@ -62,9 +66,15 @@ class _StartStopButtonState extends State<StartStopButton>
 
   @override
   Widget build(BuildContext context) {
-    final color = widget.isRunning ? _red : _green;
-    final label = widget.isRunning ? '■  Stop' : '▶  Start';
-    final onPressed = widget.isRunning ? widget.onStop : widget.onStart;
+    final color = widget.disabled
+        ? const Color(0xFF555555)
+        : widget.isRunning ? _red : _green;
+    final label = widget.disabled
+        ? (widget.isRunning ? 'Stopping…' : 'Starting…')
+        : widget.isRunning ? '■  Stop' : '▶  Start';
+    final onPressed = widget.disabled
+        ? null
+        : widget.isRunning ? widget.onStop : widget.onStart;
 
     return AnimatedBuilder(
       animation: _glow,

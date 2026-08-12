@@ -4,14 +4,14 @@ set -euo pipefail
 # build_dmg.sh — Build and package deepThink as a macOS DMG
 #
 # Usage:
-#   ./scripts/build_dmg.sh           # uses default version 1.0.1
+#   ./scripts/build_dmg.sh           # uses default version 1.0.2
 #   ./scripts/build_dmg.sh 1.2.0     # override version
 #
 # Requirements:
 #   - Flutter SDK in PATH
 #   - create-dmg  (auto-installed via brew if missing)
 
-VERSION="${1:-1.0.1}"
+VERSION="${1:-1.0.2}"
 DISPLAY_NAME="deepThink"
 BUNDLE_NAME="deep_think"          # Flutter uses pubspec name for the bundle
 BUILD_DIR="build/macos/Build/Products/Release"
@@ -61,7 +61,14 @@ create-dmg \
   "${OUTPUT_PATH}" \
   "${APP_PATH}"
 
-# ── 4. Done ──────────────────────────────────────────────────────────────────
+# ── 4. Copy standalone .app next to the DMG ──────────────────────────────────
+APP_COPY="${OUTPUT_DIR}/${BUNDLE_NAME}.app"
+echo "==> Copying standalone .app: ${APP_COPY}"
+rm -rf "${APP_COPY}"
+cp -R "${APP_PATH}" "${APP_COPY}"
+
+# ── 5. Done ──────────────────────────────────────────────────────────────────
 echo ""
-echo "✓ DMG created successfully:"
-echo "  ${OUTPUT_PATH}"
+echo "✓ Build complete:"
+echo "  DMG:        ${OUTPUT_PATH}"
+echo "  Standalone: ${APP_COPY}"

@@ -1,8 +1,8 @@
 # deepThink — Architecture
 
-> **Version:** v1.0.1  
-> **Platform:** macOS (primary) · Windows (self-compile)  
-> **Stack:** Flutter / Dart · Ollama v0.32.9 · four local LLMs  
+> **Version:** v1.0.2
+> **Platform:** macOS (primary) · Windows (self-compile)
+> **Stack:** Flutter / Dart · Ollama v0.32.9 · four local LLMs
 > **Contact:** daneyand@ibm.com
 
 ---
@@ -157,8 +157,9 @@ All files under `lib/ui/`. May import Flutter freely.
 | `welcome_screen.dart` | After startup — greets user, shows model status, free RAM, download CTA. Re-detects hardware if arriving from cancel path. |
 | `resource_gate_screen.dart` | Free RAM < 24 GB. Live RAM gauge, top process list, model stack readiness, tips. Auto-provisions and advances once RAM ≥ 20 GB. |
 | `first_launch_screen.dart` | One or more models missing. Scrollable per-model progress bars, overall bar, cancel-and-go-back button. |
-| `startup_config_screen.dart` | All models installed. Per-character model selector, session name, dice roll, RAM total, hardware display. |
-| `main_screen.dart` | Active conversation. 2×2 quadrant grid, user input bar, top bar, status band. Routes `InferenceEvent` tokens to per-quadrant streams. |
+| `startup_config_screen.dart` | All models installed. Per-character model selector, session name, dice roll, RAM total, hardware display. Loads saved `ParticipantPrefs` on entry. |
+| `main_screen.dart` | Active conversation. 2×2 quadrant grid, user input bar, top bar (Start/Stop, Pause/Resume, Configure, Help), status band. Routes `InferenceEvent` tokens to per-quadrant streams. |
+| `external_ollama_screen.dart` | Port 11434 held by a foreign process. Offers Kill & Retry rather than hanging. |
 | `about_screen.dart` | Help → About. Animated neural background, wandering emoji characters (🤖🧠💡⚡). |
 | `model_help_screen.dart` | Help → Model Downloads. Manual `ollama pull` instructions. |
 
@@ -190,7 +191,8 @@ All files under `lib/ui/`. May import Flutter freely.
 | `model_selector.dart` | Per-character dropdown for model assignment. |
 | `character_config_card.dart` | Full character config card (avatar, name, model, prompt preview). |
 | `ram_total_display.dart` | Live RAM allocation sum as characters are configured. |
-| `help_menu.dart` | macOS-style Help menu (About, Model Downloads). |
+| `help_menu.dart` | Help menu: User Guide, Architecture, Dev Guide, Model Downloads, Session Transcripts, About. |
+| `start_stop_button.dart` | Animated Start / Stop toggle with busy-spinner state. |
 
 #### About animations (`lib/ui/about/`)
 
@@ -225,17 +227,22 @@ All files under `lib/ui/`. May import Flutter freely.
 main()
   │
   ├─ FlutterError.onError + PlatformDispatcher.onError  (global error hooks)
+  ├─ ProcessSignal.sigterm / sigint → OllamaLauncher.killAll()
   ├─ AvatarRegistry.registerDefaults()
   └─ runApp(DeepThinkApp)
        └─ _AppLoader.initState()
             │
             ├─ 1. OllamaLauncher.start()
             │       ├─ isRunning()? → skip if already up
+            │       │     (includes 3 s drain timeout — never hangs on keep-alive)
+            │       ├─ lsof TCP:11434 → port taken by foreign PID?
+            │       │     └─ throw ExternalOllamaException → ExternalOllamaScreen
             │       ├─ resolve bundled binary path
             │       ├─ chmod +x binary + helpers
             │       ├─ Process.start('ollama', ['serve'], OLLAMA_KEEP_ALIVE=-1)
+            │       ├─ write PID → $TMPDIR/deepthink_ollama.pid
             │       ├─ forward stdout/stderr to flutter: print
-            │       └─ poll isRunning() up to 15 s
+            │       └─ poll isRunning() up to 120 s
             │
             ├─ 2. HardwareDetector.detect()
             │       ├─ totalRamGb  (sysctl hw.memsize)
@@ -248,12 +255,15 @@ main()
             │       └─ cross-reference against ModelRegistry.all
             │
             └─ 4. Route:
-                    ├─ error           → _ErrorScreen
+                    ├─ ExternalOllamaException → ExternalOllamaScreen (Kill & Retry)
+                    ├─ other error  → _ErrorScreen
                     ├─ freeRamGb < 24  → ResourceGateScreen (live monitor)
                     └─ else            → WelcomeScreen
                                               └─ missing models → FirstLaunchScreen
                                               └─ all present   → StartupConfigScreen
-                                                                     └─ MainScreen
+                                                                     └─ MainScreen (pushReplacement)
+                                                                           └─ Configure button
+                                                                                 └─ StartupConfigScreen
 ```
 
 ---
@@ -425,17 +435,21 @@ rings with character-specific colours:
 
 ## 11. Session Management
 
-Each session produces an NDJSON log file at:
+Each session produces a plain-text transcript at:
 ```
-~/Documents/deepThink/sessions/<session-name>-<timestamp>.ndjson
+~/Documents/deepThink/sessions/<session-name>_YYYY-MM-DD_HH-MM-SS.txt
 ```
 
-Each line is a JSON-encoded `Message`. Session metadata (id, name, participant names,
-start/end time, message count, token count) is stored in a companion `.meta.json` file
-in the same directory.
+The file is opened before `engine.start()` fires so no messages are ever missed on the
+broadcast stream. `SessionManager` owns the `IOSink` lifecycle — `endSession()` is the
+only place the sink is closed, preventing double-close hangs.
 
 `AppStats` (in-memory, not persisted) tracks cumulative totals for the current process
 lifetime: sessions started, messages exchanged, tokens generated.
+
+`ParticipantPrefs` persists the last-used model and system prompt for each character to
+`~/Documents/deepThink/participant_prefs.json`. Loaded automatically when
+`StartupConfigScreen` opens — so a returning user's choices are pre-filled every time.
 
 ---
 
@@ -524,6 +538,7 @@ signal.
 | macOS only (officially) | Windows build works but requires self-compilation; no binary release yet |
 | No resume for partial Ollama downloads | Ollama v0.32.x limitation — delete `-partial-*` blobs and retry |
 | 4-participant limit | Hardcoded in `Participant.defaults()` and the 2×2 UI grid |
-| No conversation save/load | Sessions are logged to NDJSON but there is no UI to replay them |
+| No conversation replay | Sessions are saved as plain-text transcripts; no UI to replay them yet |
 | Token counting is approximate | `text.length ~/ 4` — accurate enough for 90% threshold triggering |
 | Git LFS required | `macos/Runner/ollama/*.metallib` files are 127 MB and 158 MB |
+| `ConversationEngine` is single-use | `stop()` closes the internal `ConversationLog` stream; a new instance must be created on every Start |

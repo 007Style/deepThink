@@ -36,6 +36,11 @@ String _uuid4() {
 /// Each message records who said it ([participantName]), what they said
 /// ([content]), when they said it ([timestamp]), and whether it is a
 /// pass ([isPass]) or a user message ([isUser]).
+///
+/// [roundIndex] groups messages into conversation rounds — all responses
+/// triggered by the same user or kickoff message share the same index.
+/// The UI uses this to apply a consistent color band across all four panels,
+/// so you can visually see which responses belong together.
 class Message {
   /// Unique UUID v4 identifier for this message.
   final String id;
@@ -60,11 +65,19 @@ class Message {
   /// `true` when this message originates from the human user.
   final bool isUser;
 
+  /// Conversation round index (0-based).
+  ///
+  /// Incremented each time a new user message or the kickoff is appended.
+  /// All AI responses to that trigger share the same index.
+  /// Used by the UI to apply a color band grouping responses together.
+  final int roundIndex;
+
   /// Creates a [Message] with an auto-generated UUID and current timestamp.
   Message({
     required this.participantName,
     required this.content,
     required this.isUser,
+    this.roundIndex = 0,
     String? id,
     DateTime? timestamp,
   })  : id = id ?? _uuid4(),

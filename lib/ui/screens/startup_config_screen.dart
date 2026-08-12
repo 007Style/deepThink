@@ -12,6 +12,7 @@ import '../../core/conversation/participant.dart';
 import '../../core/ollama/hardware_detector.dart';
 import '../../core/ollama/model_registry.dart';
 import '../../core/session/name_generator.dart';
+import '../../core/session/participant_prefs.dart';
 import '../widgets/app_theme.dart';
 import '../widgets/character_config_card.dart';
 import '../widgets/help_menu.dart';
@@ -69,6 +70,14 @@ class _StartupConfigScreenState extends State<StartupConfigScreen> {
     } else {
       _detectHardware();
     }
+
+    // Load last-used model + prompt for each character.
+    _loadPrefs();
+  }
+
+  Future<void> _loadPrefs() async {
+    await ParticipantPrefs.load(_participants);
+    if (mounted) setState(() {});
   }
 
   @override
@@ -132,6 +141,9 @@ class _StartupConfigScreenState extends State<StartupConfigScreen> {
       _nameController.text = sessionName;
     }
 
+    // Persist current model + prompt choices before launching.
+    ParticipantPrefs.save(_participants);
+
     Navigator.of(context).pushReplacement(
       MaterialPageRoute<void>(
         builder: (_) => MainScreen(
@@ -140,6 +152,17 @@ class _StartupConfigScreenState extends State<StartupConfigScreen> {
         ),
       ),
     );
+  }
+
+  Future<void> _resetToDefaults() async {
+    await ParticipantPrefs.clear();
+    final fresh = Participant.defaults();
+    setState(() {
+      for (var i = 0; i < _participants.length; i++) {
+        _participants[i].assignedModelId = fresh[i].assignedModelId;
+        _participants[i].masterPrompt = fresh[i].masterPrompt;
+      }
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -225,12 +248,32 @@ class _StartupConfigScreenState extends State<StartupConfigScreen> {
                 onPromptChanged: _onPromptChanged,
               ),
 
-              const SizedBox(height: 36),
+              const SizedBox(height: 24),
 
-              // ── Launch button ────────────────────────────────────────────
-              _LaunchButton(
-                enabled: _hardware != null,
-                onPressed: _launch,
+              // ── Reset / Launch row ───────────────────────────────────────
+              Row(
+                children: [
+                  // Reset to Defaults — left-aligned, subdued
+                  TextButton.icon(
+                    onPressed: _resetToDefaults,
+                    icon: const Icon(Icons.restore_rounded, size: 15),
+                    label: const Text('Reset to Defaults'),
+                    style: TextButton.styleFrom(
+                      foregroundColor: AppColors.textSecondary,
+                      textStyle: const TextStyle(fontSize: 12),
+                    ),
+                  ),
+                  const Spacer(),
+                  // Launch button — right-aligned
+                  SizedBox(
+                    height: 52,
+                    width: 240,
+                    child: _LaunchButton(
+                      enabled: _hardware != null,
+                      onPressed: _launch,
+                    ),
+                  ),
+                ],
               ),
 
               const SizedBox(height: 24),

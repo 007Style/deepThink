@@ -9,6 +9,7 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/ollama/hardware_detector.dart';
@@ -135,6 +136,12 @@ class _AboutScreenState extends State<AboutScreen>
                             children: [
                               // ── App title ──────────────────────────────
                               _AnimatedTitle(glowCtrl: _glowCtrl),
+                              const SizedBox(height: 36),
+
+                              // ── IBM history ────────────────────────────
+                              _SectionLabel(label: 'A LOVE LETTER TO IBM\'S AI HISTORY'),
+                              const SizedBox(height: 16),
+                              _IbmHistorySection(),
                               const SizedBox(height: 32),
 
                               // ── Character bio cards ────────────────────
@@ -153,6 +160,16 @@ class _AboutScreenState extends State<AboutScreen>
                               _SectionLabel(label: 'SYSTEM INFORMATION'),
                               const SizedBox(height: 12),
                               _SystemInfoSection(hardware: _hardware),
+                              const SizedBox(height: 32),
+
+                              // ── Credits ────────────────────────────────
+                              _SectionLabel(label: 'CREDITS'),
+                              const SizedBox(height: 12),
+                              _CreditsSection(),
+                              const SizedBox(height: 32),
+
+                              // ── Dijkstra quote ─────────────────────────
+                              _QuoteSection(),
                               const SizedBox(height: 48),
                             ],
                           ),
@@ -257,7 +274,7 @@ class _AnimatedTitle extends StatelessWidget {
             const SizedBox(height: 6),
             // Version
             const Text(
-              'v1.0.1',
+              'v1.0.2',
               style: TextStyle(
                 fontSize: 14,
                 color: AppColors.textSecondary,
@@ -650,6 +667,402 @@ class _InfoCard extends StatelessWidget {
               ),
             ),
           ],
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// _IbmHistorySection — timeline of IBM AI milestones
+// ---------------------------------------------------------------------------
+
+class _IbmHistorySection extends StatelessWidget {
+  static const _events = [
+    (
+      year: '1956',
+      title: 'The Birth of AI',
+      body: 'The Dartmouth Conference. IBM researchers in the room. '
+          'A bet that machines could reason. It took 70 years, but here we are.',
+    ),
+    (
+      year: '1981',
+      title: 'IBM PC — computing comes home',
+      body: 'The open platform that made personal computing real — and set the '
+          'stage for the idea that powerful software should live on your desk, '
+          'not in a data center.',
+    ),
+    (
+      year: '1985',
+      title: 'Deep Thought',
+      body: "IBM's research group builds a chess computer that evaluates "
+          "700,000 positions per second. Named after the computer in "
+          "The Hitchhiker's Guide to the Galaxy that spent 7.5 million years "
+          "computing the answer to Life, the Universe, and Everything. "
+          "(It was 42.)",
+    ),
+    (
+      year: '1989',
+      title: 'Deep Thought II',
+      body: 'Beats every grandmaster except Kasparov. A machine that thinks '
+          'about thinking. Sound familiar?',
+    ),
+    (
+      year: '1997',
+      title: 'Deep Blue defeats Kasparov',
+      body: 'Game 6. Brønstein Variation of the Caro-Kann Defense. '
+          'Move 19: Bd6. Kasparov resigns. For the first time, a machine '
+          'beats the reigning world chess champion in a match. '
+          'The world watches and wonders: what comes next?',
+    ),
+    (
+      year: '2011',
+      title: 'Watson wins Jeopardy!',
+      body: 'Not chess moves — language. Context. Puns. Ken Jennings wrote: '
+          '"I, for one, welcome our new computer overlords." '
+          "IBM's Watson didn't just process — it understood well enough "
+          'to win \$1 million on national television.',
+    ),
+    (
+      year: '2026',
+      title: 'deepThink',
+      body: 'Four language models, running in parallel, on your machine, '
+          'debating each other, in a Flutter app, bundled with the full '
+          'Ollama runtime so you never have to configure anything.\n\n'
+          'Deep Blue would approve.',
+    ),
+  ];
+
+  const _IbmHistorySection();
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: _events.asMap().entries.map((e) {
+        final isLast = e.key == _events.length - 1;
+        return _TimelineEntry(
+          event: e.value,
+          isLast: isLast,
+          highlight: isLast,
+        );
+      }).toList(),
+    );
+  }
+}
+
+class _TimelineEntry extends StatelessWidget {
+  final ({String year, String title, String body}) event;
+  final bool isLast;
+  final bool highlight;
+
+  const _TimelineEntry({
+    required this.event,
+    required this.isLast,
+    required this.highlight,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final dotColor =
+        highlight ? AppColors.accent : AppColors.textSecondary;
+
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // ── Timeline spine ──────────────────────────────────────────────
+          SizedBox(
+            width: 52,
+            child: Column(
+              children: [
+                Text(
+                  event.year,
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: dotColor,
+                    fontFamily: 'monospace',
+                    letterSpacing: 0.5,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 4),
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: dotColor,
+                  ),
+                ),
+                if (!isLast)
+                  Expanded(
+                    child: Container(
+                      width: 1,
+                      color: AppColors.border,
+                      margin: const EdgeInsets.symmetric(vertical: 2),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          // ── Content card ────────────────────────────────────────────────
+          Expanded(
+            child: Padding(
+              padding: EdgeInsets.only(bottom: isLast ? 0 : 20),
+              child: Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: highlight
+                      ? AppColors.accent.withValues(alpha: 0.07)
+                      : AppColors.surface.withValues(alpha: 0.85),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: highlight
+                        ? AppColors.accent.withValues(alpha: 0.3)
+                        : AppColors.border,
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      event.title,
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: highlight
+                            ? AppColors.accent
+                            : AppColors.textPrimary,
+                      ),
+                    ),
+                    const SizedBox(height: 5),
+                    Text(
+                      event.body,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: AppColors.textSecondary,
+                        height: 1.55,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// _CreditsSection
+// ---------------------------------------------------------------------------
+
+class _CreditsSection extends StatelessWidget {
+  const _CreditsSection();
+
+  static Future<void> _launch(String url) async {
+    final uri = Uri.parse(url);
+    if (await canLaunchUrl(uri)) await launchUrl(uri);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.card.withValues(alpha: 0.92),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        children: [
+          _CreditRow(
+            label: 'Vision & direction',
+            value: 'Daneyand',
+            onTap: () => _launch('mailto:daneyand@ibm.com'),
+            linkStyle: true,
+          ),
+          const _HDivider(),
+          const _CreditRow(
+            label: 'Architecture & engineering',
+            value: "IBM's Bob",
+          ),
+          const _HDivider(),
+          _CreditRow(
+            label: 'Ollama runtime',
+            value: 'ollama.com',
+            onTap: () => _launch('https://ollama.com'),
+            linkStyle: true,
+          ),
+          const _HDivider(),
+          _CreditRow(
+            label: 'Source code',
+            value: 'github.com/007Style/deepThink',
+            onTap: () => _launch('https://github.com/007Style/deepThink'),
+            linkStyle: true,
+          ),
+          const _HDivider(),
+          _CreditRow(
+            label: 'Mistral 7B',
+            value: 'mistral.ai',
+            onTap: () => _launch('https://mistral.ai'),
+            linkStyle: true,
+          ),
+          const _HDivider(),
+          _CreditRow(
+            label: 'Llama 3 8B',
+            value: 'Meta AI',
+            onTap: () => _launch('https://ai.meta.com'),
+            linkStyle: true,
+          ),
+          const _HDivider(),
+          _CreditRow(
+            label: 'Gemma 2 9B',
+            value: 'Google DeepMind',
+            onTap: () => _launch('https://deepmind.google'),
+            linkStyle: true,
+          ),
+          const _HDivider(),
+          _CreditRow(
+            label: 'Phi-3 14B',
+            value: 'Microsoft Research',
+            onTap: () => _launch('https://research.microsoft.com'),
+            linkStyle: true,
+          ),
+          const _HDivider(),
+          const _CreditRow(
+            label: 'AI heritage',
+            value: 'IBM Research — 70 years of asking\n"what if machines could think?"',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CreditRow extends StatelessWidget {
+  final String label;
+  final String value;
+  final VoidCallback? onTap;
+  final bool linkStyle;
+
+  const _CreditRow({
+    required this.label,
+    required this.value,
+    this.onTap,
+    this.linkStyle = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final valueWidget = Text(
+      value,
+      textAlign: TextAlign.right,
+      style: TextStyle(
+        fontSize: 13,
+        fontWeight: FontWeight.w600,
+        color: linkStyle ? AppColors.accent : AppColors.textPrimary,
+        decoration: linkStyle ? TextDecoration.underline : null,
+        decorationColor: AppColors.accent,
+        height: 1.4,
+      ),
+    );
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            flex: 4,
+            child: Text(
+              label,
+              style: const TextStyle(
+                  fontSize: 13, color: AppColors.textSecondary),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            flex: 5,
+            child: onTap != null
+                ? GestureDetector(onTap: onTap, child: valueWidget)
+                : valueWidget,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _HDivider extends StatelessWidget {
+  const _HDivider();
+  @override
+  Widget build(BuildContext context) =>
+      Container(height: 1, color: AppColors.border);
+}
+
+// ---------------------------------------------------------------------------
+// _QuoteSection — Dijkstra quote + version footer
+// ---------------------------------------------------------------------------
+
+class _QuoteSection extends StatelessWidget {
+  const _QuoteSection();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: AppColors.surface.withValues(alpha: 0.85),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        children: [
+          const Text(
+            '"The question of whether a machine can think is about as\n'
+            'interesting as the question of whether a submarine can swim."',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 13,
+              fontStyle: FontStyle.italic,
+              color: AppColors.textPrimary,
+              height: 1.65,
+            ),
+          ),
+          const SizedBox(height: 10),
+          const Text(
+            '— Edsger W. Dijkstra',
+            style: TextStyle(
+              fontSize: 12,
+              color: AppColors.textSecondary,
+              letterSpacing: 0.5,
+            ),
+          ),
+          const SizedBox(height: 16),
+          GestureDetector(
+            onTap: () {
+              Clipboard.setData(
+                  const ClipboardData(text: 'deepThink v1.0.2'));
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('Version copied to clipboard'),
+                  duration: Duration(seconds: 2),
+                ),
+              );
+            },
+            child: Text(
+              "deepThink v1.0.2  ·  © 2026 Daneyand & IBM's Bob",
+              style: TextStyle(
+                fontSize: 11,
+                color: AppColors.textSecondary.withValues(alpha: 0.6),
+                letterSpacing: 0.4,
+              ),
+            ),
+          ),
         ],
       ),
     );

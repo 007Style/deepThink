@@ -17,27 +17,35 @@ import 'dart:io';
 import 'dart:async';
 
 // ---------------------------------------------------------------------------
+// ExternalOllamaException
+// ---------------------------------------------------------------------------
+
+/// Thrown by [OllamaLauncher.start] when port 11434 is already held by a
+/// process that is NOT the one we spawned — i.e. a pre-existing external
+/// Ollama that isn't responding to HTTP.
+///
+/// The caller should surface a UI letting the user kill the external process
+/// and retry rather than silently spinning forever.
+class ExternalOllamaException implements Exception {
+  /// PID of the process holding port 11434, or -1 if unknown.
+  final int pid;
+
+  /// Human-readable path or name of the offending process, if determinable.
+  final String processPath;
+
+  const ExternalOllamaException({required this.pid, required this.processPath});
+
+  @override
+  String toString() =>
+      'ExternalOllamaException: port 11434 is held by "$processPath" (pid $pid). '
+      'Kill that process and try again.';
+}
+
+// ---------------------------------------------------------------------------
 // OllamaLauncher
 // ---------------------------------------------------------------------------
 
 /// Manages the lifecycle of the bundled Ollama background process.
-///
-/// ### Typical usage
-/// ```dart
-/// final launcher = OllamaLauncher();
-/// await launcher.start();
-/// // ... app runs ...
-/// await launcher.stop();
-/// ```
-///
-/// ### Binary location
-/// The binary is **not** extracted from Flutter assets — it is bundled
-/// directly into the native app package at build time:
-///
-/// - **macOS:** `<app>.app/Contents/Resources/ollama/ollama`
-///   (copied by the Xcode "Copy Ollama Runtime" build phase)
-/// - **Windows:** `<exe dir>\ollama\ollama.exe`
-///   (placed there by the NSIS/Inno Setup installer)
 class OllamaLauncher {
   /// Base URL for the Ollama REST API.
   final String baseUrl;
@@ -50,33 +58,99 @@ class OllamaLauncher {
   OllamaLauncher({this.baseUrl = 'http://localhost:11434'});
 
   // -------------------------------------------------------------------------
+  // PID file — written on spawn, read by AppDelegate on quit
+  // -------------------------------------------------------------------------
+
+  /// Path to the PID file written when we spawn Ollama.
+  ///
+  /// AppDelegate.swift reads this file in `applicationWillTerminate` so it
+  /// can kill the process synchronously without any Flutter channel.
+  static String get _pidFilePath {
+    final tmp = Platform.environment['TMPDIR'] ?? '/tmp';
+    // Strip trailing slash that macOS TMPDIR often has.
+    final dir = tmp.endsWith('/') ? tmp.substring(0, tmp.length - 1) : tmp;
+    return '$dir/deepthink_ollama.pid';
+  }
+
+  static void _writePid(int pid) {
+    try {
+      File(_pidFilePath).writeAsStringSync('$pid');
+    } catch (_) {}
+  }
+
+  static void _clearPid() {
+    try {
+      final f = File(_pidFilePath);
+      if (f.existsSync()) f.deleteSync();
+    } catch (_) {}
+  }
+
+  /// Kills all Ollama processes recorded in the PID file and removes it.
+  ///
+  /// Safe to call from any isolate or from the Dart VM shutdown hook.
+  static void killAll() {
+    try {
+      final f = File(_pidFilePath);
+      if (!f.existsSync()) return;
+      final pid = int.tryParse(f.readAsStringSync().trim());
+      if (pid != null && pid > 0) {
+        Process.killPid(pid, ProcessSignal.sigkill);
+      }
+      f.deleteSync();
+    } catch (_) {}
+  }
+
+  // -------------------------------------------------------------------------
   // Public API
   // -------------------------------------------------------------------------
 
   /// Returns `true` if the Ollama HTTP server is responding on [baseUrl].
   Future<bool> isRunning() async {
+    final client = HttpClient();
     try {
       final uri = Uri.parse(baseUrl);
-      final client = HttpClient();
       client.connectionTimeout = const Duration(seconds: 2);
       final request = await client.getUrl(uri);
-      final response = await request.close();
-      await response.drain<void>();
-      client.close();
+      // Cap the full round-trip so we don't hang indefinitely when Ollama has
+      // opened the port but isn't yet processing HTTP (e.g. loading GPU runtime).
+      final response =
+          await request.close().timeout(const Duration(seconds: 3));
+      // Drain with a timeout — if the connection stays open, don't block forever.
+      await response.drain<void>().timeout(const Duration(seconds: 3));
       return response.statusCode < 500;
     } catch (_) {
       return false;
+    } finally {
+      client.close(force: true);
     }
   }
 
   /// Starts the Ollama background process.
   ///
-  /// If Ollama is already running (detected via [isRunning]) this method
-  /// returns immediately without spawning a second process.
+  /// **Flow:**
+  /// 1. If `isRunning()` → Ollama already up, return immediately.
+  /// 2. If port 11434 is taken by a foreign process → throw [ExternalOllamaException].
+  /// 3. Otherwise spawn the bundled binary and poll until responsive.
   ///
-  /// Throws a [StateError] if the binary cannot be found or executed.
+  /// Throws [ExternalOllamaException] if port 11434 is held by an external
+  /// process that isn't responding.
+  ///
+  /// Throws [StateError] if the binary cannot be found / executed, or if
+  /// our own process doesn't become responsive within the timeout.
   Future<void> start() async {
+    // Fast path — already serving HTTP.
     if (await isRunning()) return;
+
+    // Check whether the port is already taken by a foreign process.
+    // If so, we must not attempt to bind it ourselves — surface the error
+    // immediately instead of spinning for 120 s.
+    final blocker = await _findPortBlocker();
+    if (blocker != null) {
+      throw ExternalOllamaException(
+        pid: blocker.pid,
+        processPath: blocker.path,
+      );
+    }
 
     final binaryPath = _binaryPath();
     final file = File(binaryPath);
@@ -112,9 +186,11 @@ class OllamaLauncher {
         // Tell Ollama where its own binaries live (same directory).
         'OLLAMA_RUNNERS_DIR': file.parent.path,
       },
-      // Use normal mode so stdout/stderr are readable for diagnostics.
       mode: ProcessStartMode.normal,
     );
+
+    // Record the PID so AppDelegate can kill it on app termination.
+    _writePid(_process!.pid);
 
     // Forward Ollama's output to the Dart console so errors are visible.
     _process!.stdout.listen((data) {
@@ -126,9 +202,11 @@ class OllamaLauncher {
       print('[ollama:err] ${String.fromCharCodes(data).trimRight()}');
     });
 
-    // Wait up to 15 seconds for the server to become responsive.
-    const maxWait = Duration(seconds: 15);
-    const pollInterval = Duration(milliseconds: 300);
+    // Wait up to 120 seconds for the server to become responsive.
+    // On first launch Ollama may spend significant time initialising the
+    // GPU runtime before it starts handling HTTP requests.
+    const maxWait = Duration(seconds: 120);
+    const pollInterval = Duration(milliseconds: 500);
     final deadline = DateTime.now().add(maxWait);
 
     while (DateTime.now().isBefore(deadline)) {
@@ -147,8 +225,71 @@ class OllamaLauncher {
   /// Has no effect if Ollama was already running externally before [start]
   /// was called.
   Future<void> stop() async {
-    _process?.kill();
+    _process?.kill(ProcessSignal.sigkill);
     _process = null;
+    _clearPid();
+  }
+
+  // -------------------------------------------------------------------------
+  // Port blocker detection
+  // -------------------------------------------------------------------------
+
+  /// Returns info about the process holding port 11434 if the port is taken
+  /// but NOT responding to HTTP.  Returns null if the port is free.
+  Future<_ProcessInfo?> _findPortBlocker() async {
+    if (!Platform.isMacOS && !Platform.isWindows) return null;
+
+    try {
+      ProcessResult result;
+      if (Platform.isMacOS) {
+        // -F pn → structured output: p=pid line, n=name line
+        result = await Process.run(
+          'lsof',
+          ['-i', 'TCP:11434', '-sTCP:LISTEN', '-F', 'pn'],
+        );
+      } else {
+        result = await Process.run('netstat', ['-ano']);
+      }
+
+      final output = result.stdout as String;
+      if (output.trim().isEmpty) return null; // port is free
+
+      return Platform.isMacOS
+          ? _parseLsofOutput(output)
+          : _parseNetstatOutput(output);
+    } catch (_) {
+      return null; // if we can't determine, don't block startup
+    }
+  }
+
+  _ProcessInfo? _parseLsofOutput(String output) {
+    // lsof -F pn produces lines like:
+    //   p65010
+    //   n*:11434
+    int pid = -1;
+    for (final line in output.split('\n')) {
+      if (line.startsWith('p')) {
+        pid = int.tryParse(line.substring(1).trim()) ?? -1;
+      }
+    }
+    if (pid == -1) return null;
+
+    String path = 'unknown';
+    try {
+      final r = Process.runSync('ps', ['-p', '$pid', '-o', 'comm=']);
+      path = (r.stdout as String).trim();
+    } catch (_) {}
+
+    return _ProcessInfo(pid: pid, path: path.isEmpty ? 'unknown' : path);
+  }
+
+  _ProcessInfo? _parseNetstatOutput(String output) {
+    final re = RegExp(r'TCP\s+\S+:11434\s+\S+\s+LISTENING\s+(\d+)');
+    final m = re.firstMatch(output);
+    if (m == null) return null;
+    final pid = int.tryParse(m.group(1) ?? '') ?? -1;
+    if (pid == -1) return null;
+    return _ProcessInfo(pid: pid, path: 'unknown');
   }
 
   // -------------------------------------------------------------------------
@@ -156,24 +297,44 @@ class OllamaLauncher {
   // -------------------------------------------------------------------------
 
   /// Returns the filesystem path to the bundled Ollama binary.
-  ///
-  /// - macOS: resolved relative to the running executable inside the .app bundle.
-  /// - Windows: resolved relative to the running executable.
   String _binaryPath() {
     if (Platform.isMacOS) {
-      // Executable path: <app>.app/Contents/MacOS/deep_think
-      // Binary path:     <app>.app/Contents/Resources/ollama/ollama
+      // Executable: <app>.app/Contents/MacOS/deep_think
+      // Binary:     <app>.app/Contents/Resources/ollama/ollama
       final exeDir = File(Platform.resolvedExecutable).parent;
-      // Go up from MacOS/ to Contents/, then into Resources/ollama/
       final contentsDir = exeDir.parent;
       return '${contentsDir.path}/Resources/ollama/ollama';
     } else if (Platform.isWindows) {
-      // Executable path: <install dir>\deep_think.exe
-      // Binary path:     <install dir>\ollama\ollama.exe
       final exeDir = File(Platform.resolvedExecutable).parent;
       return '${exeDir.path}\\ollama\\ollama.exe';
     } else {
       throw UnsupportedError('Unsupported platform: ${Platform.operatingSystem}');
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+class _ProcessInfo {
+  final int pid;
+  final String path;
+  const _ProcessInfo({required this.pid, required this.path});
+}
+
+/// Kills the process with [pid] using SIGKILL (macOS/Linux) or
+/// `taskkill /F` (Windows).  Returns true if the signal was sent.
+Future<bool> killExternalOllama(int pid) async {
+  try {
+    if (Platform.isWindows) {
+      final r = await Process.run('taskkill', ['/F', '/PID', '$pid']);
+      return (r.exitCode == 0);
+    } else {
+      final r = await Process.run('kill', ['-9', '$pid']);
+      return (r.exitCode == 0);
+    }
+  } catch (_) {
+    return false;
   }
 }

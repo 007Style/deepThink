@@ -18,8 +18,9 @@
 10. [Adding a New Avatar Type](#10-adding-a-new-avatar-type)
 11. [Updating the Bundled Ollama Version](#11-updating-the-bundled-ollama-version)
 12. [Debugging Ollama Issues](#12-debugging-ollama-issues)
-13. [Code Style & Conventions](#13-code-style--conventions)
-14. [Dependency Notes](#14-dependency-notes)
+13. [What Changed in v1.0.2](#13-what-changed-in-v102)
+14. [Code Style & Conventions](#14-code-style--conventions)
+15. [Dependency Notes](#15-dependency-notes)
 
 ---
 
@@ -204,13 +205,14 @@ The script:
 1. Runs `flutter build macos --release`
 2. Copies the `.app` to a staging folder
 3. Creates a `.dmg` with `hdiutil`
-4. Produces `deepThink-v1.0.1.dmg` (~167 MB compressed)
+4. Also copies a standalone `deep_think.app` alongside the DMG for direct testing
+5. Produces `deepThink-v1.0.2.dmg` (~175 MB compressed)
 
 ### Via CI
 Push a version tag to trigger the GitHub Actions workflow:
 ```bash
-git tag v1.0.1
-git push origin v1.0.1
+git tag v1.0.2
+git push origin v1.0.2
 ```
 
 The workflow runs on `macos-latest`, pulls LFS, installs dependencies, builds,
@@ -346,7 +348,24 @@ OLLAMA_DEBUG=DEBUG \
 
 ---
 
-## 13. Code Style & Conventions
+## 13. What Changed in v1.0.2
+
+| Area | Change |
+|------|--------|
+| **Startup hang fix** | `isRunning()` drain now has a 3 s timeout; `HttpClient` always closed in `finally` — prevents hang when Ollama keeps HTTP connection alive |
+| **External Ollama detection** | `lsof` check before spawn; `ExternalOllamaException` → `ExternalOllamaScreen` (Kill & Retry) |
+| **Pause / Resume** | Amber ⏸ / green ▶ button in top bar; `abortInFlight()` closes `HttpClient` to cancel in-flight streams; auto-resumes when user sends a message while paused |
+| **Stop-forever fix** | `unloadModel` wrapped in 5 s `Future.timeout`; `_stop()` calls `pause()` first; `IOSink` lifecycle pinned to `endSession()` |
+| **Start guard** | `_isBusy` flag blocks double-press; spinner + label shown during stopping/starting |
+| **⚙ Configure button** | New button in top bar (right of session name, left of Help); stops session and navigates back to `StartupConfigScreen`; shows confirmation dialog if session is running |
+| **Config persistence** | `ParticipantPrefs` saves/loads model + prompt per character to `~/Documents/deepThink/participant_prefs.json`; Reset to Defaults button |
+| **Session transcripts** | Plain-text `.txt` files with human-readable filenames (`name_YYYY-MM-DD_HH-MM-SS.txt`); Help → Session Transcripts opens Finder |
+| **Auto-scroll lock** | Per-panel scroll lock; "Jump to Latest" pill; "Warp to Head" button scrolls all panels to top |
+| **App quit kills Ollama** | PID file written on spawn; `AppDelegate.swift.applicationWillTerminate` reads it and sends SIGKILL synchronously |
+
+---
+
+## 14. Code Style & Conventions
 
 - **`lib/core/`** — Zero Flutter imports. Enforced by convention, checked on review.
 - **Dart 3 / null-safety** — All code is sound null-safe.
@@ -358,7 +377,7 @@ OLLAMA_DEBUG=DEBUG \
 
 ---
 
-## 14. Dependency Notes
+## 15. Dependency Notes
 
 deepThink intentionally keeps its dependency footprint tiny:
 

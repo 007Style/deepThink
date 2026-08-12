@@ -1,8 +1,8 @@
 // User text input bar — sits above the status band.
 //
-// Shows the current user display name on the left, a multi-line text field in
-// the centre, and a send button on the right.  Also sends on Enter (without
-// Shift).
+// The bar is ALWAYS active — users can type and submit messages even before
+// the conversation starts.  When not running, submitted messages are queued
+// (shown via [pendingCount] badge) and injected into the engine on Start.
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -12,24 +12,29 @@ import 'app_theme.dart';
 // UserInputBar
 // ---------------------------------------------------------------------------
 
-/// Bottom input bar for the human user to interject in the conversation.
+/// Bottom input bar for the human user to send or queue messages.
 ///
-/// - [userName]  : displayed label (updates dynamically via easter egg).
-/// - [enabled]   : disables input when no conversation is running.
-/// - [onSubmit]  : called with the trimmed text when the user sends.
+/// - [userName]     : displayed label (updates dynamically via easter egg).
+/// - [isRunning]    : whether a conversation is actively running.
+/// - [pendingCount] : number of messages queued before Start.
+/// - [onSubmit]     : called with the trimmed text when the user sends.
 class UserInputBar extends StatefulWidget {
   /// Dynamic display name for the user label.
   final String userName;
 
-  /// Whether the input is active (conversation is running).
-  final bool enabled;
+  /// Whether the conversation engine is running.
+  final bool isRunning;
+
+  /// Number of messages queued for injection at Start.
+  final int pendingCount;
 
   /// Called with the non-empty trimmed text when the user submits.
   final void Function(String) onSubmit;
 
   const UserInputBar({
     required this.userName,
-    required this.enabled,
+    required this.isRunning,
+    required this.pendingCount,
     required this.onSubmit,
     super.key,
   });
@@ -59,32 +64,58 @@ class _UserInputBarState extends State<UserInputBar> {
 
   @override
   Widget build(BuildContext context) {
+    final bool preStart = !widget.isRunning;
+
+    // Border color is muted when pre-start (queue mode), accent when live.
+    final Color borderColor = preStart
+        ? AppColors.border
+        : AppColors.accent.withValues(alpha: 0.55);
+
     return Container(
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         color: AppColors.surface,
         border: Border(
-          top: BorderSide(color: AppColors.border, width: 1),
+          top: BorderSide(color: borderColor, width: 1),
         ),
       ),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          // User name label
+          // User name label + optional "queued" pill
           SizedBox(
-            width: 72,
-            child: Text(
-              widget.userName,
-              style: const TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-                color: AppColors.accent,
-              ),
-              overflow: TextOverflow.ellipsis,
+            width: 96,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  widget.userName,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: preStart
+                        ? AppColors.textSecondary
+                        : AppColors.accent,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+                if (preStart && widget.pendingCount > 0) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    '${widget.pendingCount} queued',
+                    style: const TextStyle(
+                      fontSize: 9,
+                      color: AppColors.accent,
+                      fontStyle: FontStyle.italic,
+                    ),
+                  ),
+                ],
+              ],
             ),
           ),
           const SizedBox(width: 8),
-          // Text field
+          // Text field — always enabled
           Expanded(
             child: KeyboardListener(
               focusNode: FocusNode(),
@@ -92,17 +123,14 @@ class _UserInputBarState extends State<UserInputBar> {
                 // Send on Enter, new-line on Shift+Enter
                 if (event is KeyDownEvent &&
                     event.logicalKey == LogicalKeyboardKey.enter) {
-                  final shift =
-                      HardwareKeyboard.instance.isShiftPressed;
-                  if (!shift && widget.enabled) {
-                    _submit();
-                  }
+                  final shift = HardwareKeyboard.instance.isShiftPressed;
+                  if (!shift) _submit();
                 }
               },
               child: TextField(
                 controller: _ctrl,
                 focusNode: _focus,
-                enabled: widget.enabled,
+                enabled: true,
                 maxLines: 3,
                 minLines: 1,
                 keyboardType: TextInputType.multiline,
@@ -112,25 +140,27 @@ class _UserInputBarState extends State<UserInputBar> {
                   color: AppColors.textPrimary,
                 ),
                 decoration: InputDecoration(
-                  hintText: widget.enabled
-                      ? 'Interject…'
-                      : 'Start a conversation first',
+                  hintText: preStart
+                      ? 'Queue a message for when the conversation starts…'
+                      : 'Interject…',
                   isDense: true,
                 ),
               ),
             ),
           ),
           const SizedBox(width: 8),
-          // Send button
+          // Send button — always enabled
           SizedBox(
             width: 64,
             height: 34,
             child: ElevatedButton(
-              onPressed: widget.enabled ? _submit : null,
+              onPressed: _submit,
               style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.accent,
-                foregroundColor: Colors.white,
-                disabledBackgroundColor: AppColors.border,
+                backgroundColor:
+                    preStart ? AppColors.border : AppColors.accent,
+                foregroundColor: preStart
+                    ? AppColors.textSecondary
+                    : Colors.white,
                 padding: EdgeInsets.zero,
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(6),
@@ -140,7 +170,7 @@ class _UserInputBarState extends State<UserInputBar> {
                   fontWeight: FontWeight.w700,
                 ),
               ),
-              child: const Text('Send'),
+              child: Text(preStart ? 'Queue' : 'Send'),
             ),
           ),
         ],
