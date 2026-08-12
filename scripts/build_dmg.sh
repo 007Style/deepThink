@@ -12,12 +12,14 @@ set -euo pipefail
 #   - create-dmg  (auto-installed via brew if missing)
 
 VERSION="${1:-1.0.1}"
-APP_NAME="deepThink"
+DISPLAY_NAME="deepThink"
+BUNDLE_NAME="deep_think"          # Flutter uses pubspec name for the bundle
 BUILD_DIR="build/macos/Build/Products/Release"
-APP_PATH="${BUILD_DIR}/${APP_NAME}.app"
+APP_PATH="${BUILD_DIR}/${BUNDLE_NAME}.app"
 OUTPUT_DIR="build"
-DMG_NAME="${APP_NAME}-v${VERSION}-macos.dmg"
+DMG_NAME="${DISPLAY_NAME}-v${VERSION}-macos.dmg"
 OUTPUT_PATH="${OUTPUT_DIR}/${DMG_NAME}"
+SKIP_BUILD="${SKIP_BUILD:-0}"     # set SKIP_BUILD=1 to skip flutter build
 
 # ── 1. Ensure create-dmg is available ───────────────────────────────────────
 if ! command -v create-dmg &>/dev/null; then
@@ -30,8 +32,12 @@ if ! command -v create-dmg &>/dev/null; then
 fi
 
 # ── 2. Flutter release build ─────────────────────────────────────────────────
-echo "==> Building ${APP_NAME} v${VERSION} for macOS (release)..."
-flutter build macos --release
+if [ "${SKIP_BUILD}" = "1" ]; then
+  echo "==> Skipping Flutter build (SKIP_BUILD=1)"
+else
+  echo "==> Building ${DISPLAY_NAME} v${VERSION} for macOS (release)..."
+  flutter build macos --release
+fi
 
 if [ ! -d "${APP_PATH}" ]; then
   echo "ERROR: Expected app bundle not found at: ${APP_PATH}" >&2
@@ -45,12 +51,12 @@ echo "==> Packaging as DMG: ${DMG_NAME}"
 rm -f "${OUTPUT_PATH}"
 
 create-dmg \
-  --volname "${APP_NAME}" \
+  --volname "${DISPLAY_NAME}" \
   --window-pos 200 120 \
   --window-size 600 400 \
   --icon-size 128 \
-  --icon "${APP_NAME}.app" 160 185 \
-  --hide-extension "${APP_NAME}.app" \
+  --icon "${BUNDLE_NAME}.app" 160 185 \
+  --hide-extension "${BUNDLE_NAME}.app" \
   --app-drop-link 430 185 \
   "${OUTPUT_PATH}" \
   "${APP_PATH}"
