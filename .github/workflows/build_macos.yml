@@ -2,7 +2,6 @@ name: Build macOS
 
 on:
   push:
-    branches: [main]
     tags:
       - 'v*.*.*'
   workflow_dispatch:
@@ -15,6 +14,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          lfs: true          # pull Git LFS objects (Metal shader .metallib files)
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
@@ -24,6 +25,9 @@ jobs:
 
       - name: Enable macOS desktop target
         run: flutter config --enable-macos-desktop
+
+      - name: Install CocoaPods dependencies
+        run: cd macos && pod install && cd ..
 
       - name: Get Flutter dependencies
         run: flutter pub get
@@ -36,19 +40,17 @@ jobs:
 
       - name: Create DMG
         run: |
-          APP_PATH="build/macos/Build/Products/Release/deepThink.app"
+          # Flutter names the bundle after pubspec.yaml `name:` → deep_think.app
+          APP_PATH="build/macos/Build/Products/Release/deep_think.app"
           VERSION="${GITHUB_REF_NAME:-1.0.1}"
-          # Strip leading 'v' for the script version argument
-          VERSION="${VERSION#v}"
-          chmod +x scripts/build_dmg.sh
-          # Run the script but skip the flutter build step (already done above)
+          VERSION="${VERSION#v}"   # strip leading 'v'
           create-dmg \
             --volname "deepThink" \
             --window-pos 200 120 \
             --window-size 600 400 \
             --icon-size 128 \
-            --icon "deepThink.app" 160 185 \
-            --hide-extension "deepThink.app" \
+            --icon "deep_think.app" 160 185 \
+            --hide-extension "deep_think.app" \
             --app-drop-link 430 185 \
             "build/deepThink-v${VERSION}-macos.dmg" \
             "${APP_PATH}"
@@ -75,10 +77,9 @@ jobs:
 
             ### Windows
             A pre-compiled Windows installer is not yet available.
-            Windows users can compile from source — see [windows/BUILD.md](https://github.com/007Style/deepThink/blob/main/windows/BUILD.md) for full step-by-step instructions.
+            Windows users can compile from source — see [windows/BUILD.md](https://github.com/007Style/deepThink/blob/main/windows/BUILD.md).
 
-            ### AI Models
-            All four AI models (~22 GB total) are downloaded on first launch. The app runs **fully offline** after that.
+            ### AI Models (~22 GB total, downloaded on first launch)
 
             | Model | Tag | ~RAM |
             |-------|-----|------|
