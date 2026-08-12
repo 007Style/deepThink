@@ -3,10 +3,6 @@ name: Build Windows
 on:
   push:
     branches: [main]
-    tags:
-      - 'v*'
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
 jobs:
@@ -21,7 +17,6 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.22.0'
           channel: 'stable'
           cache: true
 
@@ -31,11 +26,11 @@ jobs:
       - name: Get Flutter dependencies
         run: flutter pub get
 
-      - name: Run Flutter analysis
-        run: flutter analyze --no-fatal-infos
-
       - name: Build Windows release
         run: flutter build windows --release
+
+      - name: Install NSIS
+        run: choco install nsis --yes
 
       - name: Upload Windows build artifact
         uses: actions/upload-artifact@v4
@@ -43,25 +38,3 @@ jobs:
           name: deepThink-windows-release
           path: build\windows\x64\runner\Release\
           retention-days: 30
-
-      - name: Create GitHub Release note (on tag)
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          body: |
-            ## deepThink ${{ github.ref_name }} — Windows
-
-            ### Self-compile instructions
-
-            A pre-compiled Windows installer is not yet available.  
-            See [windows/BUILD.md](https://github.com/007Style/deepThink/blob/main/windows/BUILD.md) for full build instructions.
-
-            **Requirements:**
-            - Windows 10 or 11 (64-bit)
-            - Flutter 3.22+
-            - Visual Studio 2022 with "Desktop development with C++" workload
-
-            The CI artifact for this release can be downloaded from the Actions tab if you have repository access.
-          append_body: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

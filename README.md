@@ -2,6 +2,24 @@
 
 > Four AI minds. One conversation. Zero internet required.
 
+[![Build macOS](https://github.com/007Style/deepThink/actions/workflows/build_macos.yml/badge.svg)](https://github.com/007Style/deepThink/actions/workflows/build_macos.yml)
+[![Build Windows](https://github.com/007Style/deepThink/actions/workflows/build_windows.yml/badge.svg)](https://github.com/007Style/deepThink/actions/workflows/build_windows.yml)
+
+---
+
+## Download
+
+| Platform | Status | Link |
+|----------|--------|------|
+| **macOS** (13 Ventura+) | ✅ Available | [**GitHub Releases →**](https://github.com/007Style/deepThink/releases/latest) |
+| **Windows** | 🔜 Coming soon | [Build from source — see windows/BUILD.md](windows/BUILD.md) |
+
+> **macOS:** Download the `.dmg` from [Releases](https://github.com/007Style/deepThink/releases/latest), open it, and drag **deepThink.app** to your Applications folder.
+>
+> **Windows release is planned for a future version.** In the meantime, Windows users can compile directly from this repository — the full step-by-step guide is in [`windows/BUILD.md`](windows/BUILD.md).
+
+---
+
 ![deepThink screenshot placeholder](docs/screenshot.png)
 
 `deepThink` is a local AI conversation application where four distinct AI personalities — **WATSON**, **DEEP**, **NOVA**, and **SAGE** — hold an ongoing discussion with each other while you watch, listen, and interject at any time. All four models run **in parallel** (not round-robin), powered by [Ollama](https://ollama.com) running completely on your machine.

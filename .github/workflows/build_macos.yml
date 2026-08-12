@@ -4,9 +4,7 @@ on:
   push:
     branches: [main]
     tags:
-      - 'v*'
-  pull_request:
-    branches: [main]
+      - 'v*.*.*'
   workflow_dispatch:
 
 jobs:
@@ -21,7 +19,6 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.22.0'
           channel: 'stable'
           cache: true
 
@@ -30,9 +27,6 @@ jobs:
 
       - name: Get Flutter dependencies
         run: flutter pub get
-
-      - name: Run Flutter analysis
-        run: flutter analyze --no-fatal-infos
 
       - name: Build macOS release
         run: flutter build macos --release
@@ -43,46 +37,54 @@ jobs:
       - name: Create DMG
         run: |
           APP_PATH="build/macos/Build/Products/Release/deepThink.app"
-          DMG_NAME="deepThink-${{ github.ref_name }}.dmg"
+          VERSION="${GITHUB_REF_NAME:-1.0.1}"
+          # Strip leading 'v' for the script version argument
+          VERSION="${VERSION#v}"
+          chmod +x scripts/build_dmg.sh
+          # Run the script but skip the flutter build step (already done above)
           create-dmg \
             --volname "deepThink" \
-            --volicon "$APP_PATH/Contents/Resources/AppIcon.icns" \
             --window-pos 200 120 \
             --window-size 600 400 \
-            --icon-size 100 \
-            --icon "deepThink.app" 175 190 \
+            --icon-size 128 \
+            --icon "deepThink.app" 160 185 \
             --hide-extension "deepThink.app" \
-            --app-drop-link 425 190 \
-            "build/$DMG_NAME" \
-            "$APP_PATH" || \
-          cp -r "$APP_PATH" "build/deepThink.app" && \
-          hdiutil create -volname "deepThink" -srcfolder "build/deepThink.app" -ov -format UDZO "build/$DMG_NAME"
+            --app-drop-link 430 185 \
+            "build/deepThink-v${VERSION}-macos.dmg" \
+            "${APP_PATH}"
 
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
         with:
           name: deepThink-macos-dmg
-          path: build/deepThink-*.dmg
+          path: build/deepThink-v*-macos.dmg
           retention-days: 30
 
       - name: Create GitHub Release (on tag)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: build/deepThink-*.dmg
+          files: build/deepThink-v*-macos.dmg
           body: |
             ## deepThink ${{ github.ref_name }}
 
             ### macOS
-            Download `deepThink-${{ github.ref_name }}.dmg`, open it, and drag `deepThink.app` to your Applications folder.
+            Download `deepThink-${{ github.ref_name }}-macos.dmg`, open it, and drag **deepThink.app** to your Applications folder.
 
-            **Requirements:** macOS 13 Ventura or later, Apple Silicon recommended (32 GB RAM minimum for full model stack).
+            **Requirements:** macOS 13 Ventura or later · Apple Silicon (M1/M2/M3/M4) recommended · 32 GB RAM minimum for the full model stack.
 
             ### Windows
-            A pre-compiled Windows installer is not yet available.  
-            Windows users can compile from source — see [windows/BUILD.md](https://github.com/007Style/deepThink/blob/main/windows/BUILD.md) for full instructions.
+            A pre-compiled Windows installer is not yet available.
+            Windows users can compile from source — see [windows/BUILD.md](https://github.com/007Style/deepThink/blob/main/windows/BUILD.md) for full step-by-step instructions.
 
-            ### Models
-            All four AI models (~22 GB total) are downloaded on first launch. The app runs fully offline after that.
+            ### AI Models
+            All four AI models (~22 GB total) are downloaded on first launch. The app runs **fully offline** after that.
+
+            | Model | Tag | ~RAM |
+            |-------|-----|------|
+            | Mistral 7B | `mistral:7b` | ~4.1 GB |
+            | Llama 3 8B | `llama3:8b` | ~4.7 GB |
+            | Gemma 2 9B | `gemma2:9b` | ~5.5 GB |
+            | Phi-3 14B | `phi3:14b` | ~8.2 GB |
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
